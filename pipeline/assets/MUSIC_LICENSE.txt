@@ -3,10 +3,10 @@ BACKGROUND MUSIC LICENSE
 
 IMPORTANT: Before adding bgmusic.mp3, fill in this file with the track details.
 
-Track name   : [REPLACE WITH TRACK NAME]
-Artist       : [REPLACE WITH ARTIST NAME]
-Source URL   : [REPLACE WITH DIRECT DOWNLOAD URL]
-License      : [YouTube Audio Library free-to-use / Pixabay Content License]
+Track name   : Visions
+Artist       : Patrick Jordan Potier
+Source URL   : https://studio.youtube.com/channel/music
+License      : YouTube Audio Library — free to use in monetized YouTube videos, no attribution required
 
 Allowed sources ONLY:
   1. YouTube Audio Library — https://www.youtube.com/audiolibrary
