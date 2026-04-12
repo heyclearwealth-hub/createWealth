@@ -167,7 +167,7 @@ def main() -> None:
     # Step 7: Render
     from pipeline.renderer import render
 
-    video_path = render(clip_paths, voiceover_path)
+    video_path = render(clip_paths, voiceover_path, text_overlays=script_data.get("text_overlays"))
     logger.info("Video rendered: %s", video_path)
 
     # Step 8: Packaging candidates

@@ -14,6 +14,9 @@ import os
 import re
 import subprocess
 from pathlib import Path
+from typing import Optional
+
+from pipeline.renderer import _bin
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +37,7 @@ MAX_DURATION_S = 60
 
 def _ffprobe_duration(path: Path) -> float:
     result = subprocess.run(
-        ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", str(path)],
+        [_bin("ffprobe"), "-v", "quiet", "-print_format", "json", "-show_format", str(path)],
         capture_output=True, text=True, timeout=30, check=True,
     )
     return float(json.loads(result.stdout)["format"]["duration"])
@@ -177,7 +180,7 @@ def _build_ffmpeg_cmd(
     )
 
     return [
-        "ffmpeg", "-y",
+        _bin("ffmpeg"), "-y",
         "-ss", str(start),
         "-t", str(duration),
         "-i", str(video_path),
@@ -200,7 +203,7 @@ def create_short(
     video_path: Path,
     audio_path: Path,
     pipeline_json: dict,
-    preferred_start: float | None = None,
+    preferred_start: Optional[float] = None,
     cta_text: str = "Watch full video ↑ Link in bio",
     output_path: Path = OUTPUT_SHORT,
 ) -> Path:

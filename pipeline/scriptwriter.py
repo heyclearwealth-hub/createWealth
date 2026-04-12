@@ -178,6 +178,52 @@ def _validate_compliance(script_data: dict) -> bool:
         return False
 
 
+def _generate_text_overlays(script_data: dict) -> list[dict]:
+    """
+    Ask Claude to identify key moments in the script for text overlays.
+    Returns a list of overlay dicts with type, timing, and text content.
+    Falls back to [] on any error.
+    """
+    script = script_data.get("script", "")
+    if not script:
+        return []
+
+    words = script.split()
+    total_words = len(words)
+
+    prompt = (
+        f"You are a video editor. Given this YouTube script ({total_words} words total), "
+        "identify key moments for on-screen text overlays.\n\n"
+        "Extract exactly:\n"
+        "- 1 title_card at start: person name/situation + core problem number\n"
+        "- 3–5 stat callouts: specific dollar amounts or percentages spoken in script\n"
+        "- 2–3 section headers at story beat transitions: e.g. 'THE PROBLEM', 'THE TURNING POINT', 'THE RESULT'\n"
+        "- 1 before_after card near the end: before/after comparison (newline-separated lines)\n\n"
+        "Rules:\n"
+        "- start_word = word index in the script where overlay appears (0-indexed)\n"
+        "- duration_s = seconds the text stays on screen\n"
+        "- Keep stat text short: just the number/amount (e.g. '$38,000' not 'she had $38,000 in debt')\n\n"
+        "Return ONLY this JSON (no explanation):\n"
+        '{"overlays": [\n'
+        '  {"type": "title_card", "lines": ["Name", "Job | Age | Salary", "Core problem"], "start_word": 0, "duration_s": 4},\n'
+        '  {"type": "stat", "text": "$38,000", "start_word": 45, "duration_s": 3},\n'
+        '  {"type": "section", "text": "THE TURNING POINT", "start_word": 180, "duration_s": 2.5},\n'
+        '  {"type": "before_after", "before": "Line1\\nLine2", "after": "Line1\\nLine2", "start_word": 420, "duration_s": 5}\n'
+        "]}\n\n"
+        f"SCRIPT:\n{script[:4000]}"
+    )
+
+    try:
+        raw = _call_claude([{"role": "user", "content": prompt}], temperature=0.2)
+        data = _extract_json(raw)
+        overlays = data.get("overlays", [])
+        logger.info("Generated %d text overlays", len(overlays))
+        return overlays
+    except Exception as exc:
+        logger.warning("Text overlay generation failed: %s — skipping overlays", exc)
+        return []
+
+
 def generate(topic: dict) -> dict:
     """
     Generate a compliant, unique script for the given topic.
@@ -219,6 +265,7 @@ def generate(topic: dict) -> dict:
 
         # All checks passed
         _save_script_to_memory(script_text)
+        data["text_overlays"] = _generate_text_overlays(data)
         logger.info("Script generated successfully for topic: %s", topic["keyword"])
         return data
 
