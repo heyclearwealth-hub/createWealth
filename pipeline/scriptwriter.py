@@ -191,6 +191,20 @@ def _generate_text_overlays(script_data: dict) -> list[dict]:
     words = script.split()
     total_words = len(words)
 
+    # Build title card hint from case_study field if present
+    cs = script_data.get("case_study", {})
+    if cs:
+        salary_fmt = f"${cs.get('salary', 0):,}/year" if cs.get("salary") else ""
+        title_card_hint = (
+            f'  {{"type": "title_card", "lines": ["Meet {cs.get("name", "Name")}", '
+            f'"{cs.get("job", "Job")} | Age {cs.get("age", "?")} | {salary_fmt}", '
+            f'"{cs.get("key_number", cs.get("problem", "")[:40])}"], "start_word": 0, "duration_s": 4}},\n'
+        )
+    else:
+        title_card_hint = (
+            '  {"type": "title_card", "lines": ["Name", "Job | Age | Salary", "Core problem"], "start_word": 0, "duration_s": 4},\n'
+        )
+
     prompt = (
         f"You are a video editor. Given this YouTube script ({total_words} words total), "
         "identify key moments for on-screen text overlays.\n\n"
@@ -205,7 +219,7 @@ def _generate_text_overlays(script_data: dict) -> list[dict]:
         "- Keep stat text short: just the number/amount (e.g. '$38,000' not 'she had $38,000 in debt')\n\n"
         "Return ONLY this JSON (no explanation):\n"
         '{"overlays": [\n'
-        '  {"type": "title_card", "lines": ["Name", "Job | Age | Salary", "Core problem"], "start_word": 0, "duration_s": 4},\n'
+        + title_card_hint +
         '  {"type": "stat", "text": "$38,000", "start_word": 45, "duration_s": 3},\n'
         '  {"type": "section", "text": "THE TURNING POINT", "start_word": 180, "duration_s": 2.5},\n'
         '  {"type": "before_after", "before": "Line1\\nLine2", "after": "Line1\\nLine2", "start_word": 420, "duration_s": 5}\n'

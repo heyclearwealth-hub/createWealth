@@ -20,6 +20,34 @@ The very first word of the script MUST be spoken dialogue. NEVER begin with `[PA
 
 ---
 
+## Case Study Format (REQUIRED)
+
+Every script MUST be built around a **single real person's story**. This is non-negotiable. Third-person case studies outperform generic advice by 3–4x on retention because viewers project themselves onto the person.
+
+**How to introduce the case study person (within the first 30 seconds):**
+> "Meet [Name]. [Age], [Job title], [annual salary]. [One-line problem: e.g. '$43,000 in student debt and zero savings at 29.'] Here's what changed everything."
+
+**Rules for the case study person:**
+- Use a common first name only (no last names)
+- Age must be 24–36 (core audience)
+- Job must be realistic and relatable: nurse, teacher, software engineer, marketing manager, accountant, graphic designer, project manager, etc.
+- Salary must be specific and realistic for the job/location: $48,000–$95,000
+- The problem must be specific with a dollar amount: debt total, savings deficit, missed contributions, etc.
+- The outcome must be specific with a dollar amount and timeframe: "paid off $38k in 22 months", "built $14,000 emergency fund in 11 months", "increased net worth by $31,000 in one year"
+- The person's numbers must be **internally consistent** — salary, debt, monthly payment, and timeline must all add up realistically
+
+**The script follows this person's journey through all 5 beats.** Their specific numbers ARE the proof. Their outcome IS the payoff.
+
+**Overlay-ready data points (required in script):**
+The script must include these moments in order — they are used to generate on-screen text cards:
+1. The person's intro: name, job, age, salary, starting problem (dollar amount) — spoken in first 30 seconds
+2. One key stat about how common this problem is (e.g. "56% of Americans have less than $1,000 in savings") — cite source
+3. The turning point moment — the specific decision or discovery that changed everything
+4. The core number that makes the method work (e.g. "$847/month", "6% match", "$200 extra on principal")
+5. The before/after outcome — starting debt/savings vs. ending debt/savings, with exact dollar amounts and timeframe
+
+---
+
 ## Script Requirements
 
 Every script MUST follow this exact story arc structure. This is what separates 8-minute videos with 65% retention from 9-minute videos with 40% retention.
@@ -28,9 +56,10 @@ Every script MUST follow this exact story arc structure. This is what separates 
 
 ### Story Arc (5 beats — in order)
 
-**Beat 1 — HOOK (first 60 seconds): Agitate the pain**
-- Open with a specific number, dollar figure, or uncomfortable truth — NO warmup
-- Make the viewer feel the cost of NOT watching. Example: "If you're 27 and your money is sitting in a savings account, you're going to lose over $180,000 by retirement. Not hypothetically — mathematically. Let me show you exactly how."
+**Beat 1 — HOOK (first 60 seconds): Introduce the person + agitate the pain**
+- Open by introducing the case study person by name, job, age, salary, and specific problem — within the first 20 seconds
+- Example: "Meet Marcus. 31, project manager, making $74,000 a year. Twelve months ago he had $41,000 in credit card debt and $0 in savings. Today that debt is gone. This is exactly what he did."
+- Then agitate: make the viewer feel the cost of NOT watching. Connect the person's situation to a statistic about how common it is.
 - End the hook with a clear promise: "By the end of this video, you'll know exactly [what to do / how much / when to start]."
 - NEVER start with `[PAUSE]` — first word must be spoken dialogue
 
@@ -39,11 +68,11 @@ Every script MUST follow this exact story arc structure. This is what separates 
 - This is the "wait, that's not what I expected" moment that makes viewers keep watching
 - Example: "Most people think you should pay off all debt before investing. That's actually wrong for most people with a salary above $50k — here's the math."
 
-**Beat 3 — PROOF (the numbers): Show the math**
-- Work through a specific scenario with real dollar amounts — not ranges, exact numbers
-- Use [STAT: source name, year] inline when citing data
-- One concrete worked example minimum: "If Sarah earns $68,000 and contributes 6%..."
-- This is where you earn trust. Be precise.
+**Beat 3 — PROOF (the numbers): Show the math through the case study person**
+- Walk through the case study person's exact numbers — their salary, their debt payments, their monthly cash flow
+- Use [STAT: source name, year] inline when citing external data
+- Show the math step by step: "Marcus was paying $1,100/month in minimum payments. By switching to the avalanche method, he freed up $340/month in 6 months. Here's exactly how."
+- This is where you earn trust. Be precise. No ranges — exact dollar amounts only.
 
 **Beat 4 — PAYOFF (the answer): Give the exact steps**
 - Choose ONE structural format and commit to it:
@@ -104,6 +133,15 @@ Return a single JSON object with this exact structure:
   "tags": ["tag1", "tag2", "..."],
   "hook_summary": "<1–2 sentences summarizing the hook — used by hook_gate.py for scoring>",
   "thumbnail_concept": "<Text overlay concept for thumbnail, max 6 words, must accurately reflect video content>",
+  "case_study": {
+    "name": "<first name only>",
+    "age": <integer>,
+    "job": "<job title>",
+    "salary": <annual salary integer>,
+    "problem": "<one sentence: the specific starting problem with dollar amount>",
+    "outcome": "<one sentence: the specific result with dollar amount and timeframe>",
+    "key_number": "<the single most important number in the story, e.g. '$847/month' or '$41,000 paid off'>"
+  },
   "script": "<Full spoken script, 1200–1800 words for 8–12 min video at 150 wpm. Use [PAUSE] markers for natural breath points. Use [STAT: source name, year] inline where statistics are cited.>",
   "stat_citations": ["<Source: citation string used in description>"],
   "pillar_playlist_bridge": "<The verbal bridge line at the end referencing the next video topic in this pillar>"
