@@ -188,49 +188,65 @@ def _generate_text_overlays(script_data: dict) -> list[dict]:
     if not script:
         return []
 
-    words = script.split()
-    total_words = len(words)
-
-    # Build title card hint from case_study field if present
+    total_words = len(script.split())
     cs = script_data.get("case_study", {})
+
+    # Pre-build title card from case_study data so Claude doesn't have to guess it
     if cs:
         salary_fmt = f"${cs.get('salary', 0):,}/year" if cs.get("salary") else ""
-        title_card_hint = (
-            f'  {{"type": "title_card", "lines": ["Meet {cs.get("name", "Name")}", '
-            f'"{cs.get("job", "Job")} | Age {cs.get("age", "?")} | {salary_fmt}", '
-            f'"{cs.get("key_number", cs.get("problem", "")[:40])}"], "start_word": 0, "duration_s": 4}},\n'
+        title_card = {
+            "type": "title_card",
+            "lines": [
+                f"Meet {cs.get('name', 'Name')}",
+                f"{cs.get('job', 'Job')} | Age {cs.get('age', '?')} | {salary_fmt}",
+                cs.get("key_number", cs.get("problem", "")[:40]),
+            ],
+            "start_word": 0,
+            "duration_s": 4,
+        }
+        title_card_json = json.dumps(title_card)
+        title_card_instruction = (
+            f"Use this exact title_card (already filled in from script metadata):\n"
+            f"{title_card_json}\n\n"
         )
     else:
-        title_card_hint = (
-            '  {"type": "title_card", "lines": ["Name", "Job | Age | Salary", "Core problem"], "start_word": 0, "duration_s": 4},\n'
+        title_card_instruction = (
+            'Include a title_card at start_word 0 with lines: '
+            '["Person name", "Job | Age | Salary", "Core problem amount"]\n\n'
         )
 
-    prompt = (
-        f"You are a video editor. Given this YouTube script ({total_words} words total), "
-        "identify key moments for on-screen text overlays.\n\n"
-        "Extract exactly:\n"
-        "- 1 title_card at start: person name/situation + core problem number\n"
-        "- 3–5 stat callouts: specific dollar amounts or percentages spoken in script\n"
-        "- 2–3 section headers at story beat transitions: e.g. 'THE PROBLEM', 'THE TURNING POINT', 'THE RESULT'\n"
-        "- 1 before_after card near the end: before/after comparison (newline-separated lines)\n\n"
-        "Rules:\n"
-        "- start_word = word index in the script where overlay appears (0-indexed)\n"
-        "- duration_s = seconds the text stays on screen\n"
-        "- Keep stat text short: just the number/amount (e.g. '$38,000' not 'she had $38,000 in debt')\n\n"
-        "Return ONLY this JSON (no explanation):\n"
-        '{"overlays": [\n'
-        + title_card_hint +
-        '  {"type": "stat", "text": "$38,000", "start_word": 45, "duration_s": 3},\n'
-        '  {"type": "section", "text": "THE TURNING POINT", "start_word": 180, "duration_s": 2.5},\n'
-        '  {"type": "before_after", "before": "Line1\\nLine2", "after": "Line1\\nLine2", "start_word": 420, "duration_s": 5}\n'
-        "]}\n\n"
-        f"SCRIPT:\n{script[:4000]}"
-    )
+    prompt = f"""You are a video editor. Analyze this YouTube finance script ({total_words} words) and return timed text overlay specs.
+
+{title_card_instruction}Also identify from the script:
+- 3 to 5 stat overlays: short dollar amounts or percentages (e.g. "$38,000" or "56%") — use the exact word index where that number is spoken
+- 2 to 3 section headers at story beat transitions (e.g. "THE PROBLEM", "THE TURNING POINT", "THE RESULT")
+- 1 before_after overlay near the end with before/after dollar amounts (use newline between lines)
+
+Rules:
+- start_word is the 0-indexed word position in the script where the overlay appears
+- duration_s is how long it stays on screen (stats: 3.0, sections: 2.5, before_after: 5.0, title_card: 4.0)
+- Stat text must be the number only, not a full sentence
+
+Return ONLY valid JSON, no explanation:
+{{"overlays": [
+  {{"type": "title_card", "lines": ["...","...","..."], "start_word": 0, "duration_s": 4.0}},
+  {{"type": "stat", "text": "$XX,XXX", "start_word": N, "duration_s": 3.0}},
+  {{"type": "section", "text": "THE PROBLEM", "start_word": N, "duration_s": 2.5}},
+  {{"type": "before_after", "before": "Line1\\nLine2", "after": "Line1\\nLine2", "start_word": N, "duration_s": 5.0}}
+]}}
+
+SCRIPT:
+{script[:4000]}"""
 
     try:
         raw = _call_claude([{"role": "user", "content": prompt}], temperature=0.2)
+        logger.debug("Overlay raw response: %s", raw[:500])
         data = _extract_json(raw)
         overlays = data.get("overlays", [])
+        # If case_study was present, ensure title card uses our pre-built version
+        if cs and overlays:
+            overlays = [o for o in overlays if o.get("type") != "title_card"]
+            overlays.insert(0, title_card)
         logger.info("Generated %d text overlays", len(overlays))
         return overlays
     except Exception as exc:
