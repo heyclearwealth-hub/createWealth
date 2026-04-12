@@ -1,1 +1,16 @@
 get_token.py
+
+# Generated pipeline outputs — never commit these
+workspace/
+pipeline/assets/final_video.mp4
+pipeline/assets/pipeline.json
+pipeline/assets/voiceover.mp3
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# Local env
+.env

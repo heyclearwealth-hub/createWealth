@@ -14,53 +14,55 @@ TOPICS_FILE = Path("data/topics_used.json")
 WEIGHTS_FILE = Path("data/topic_weights.json")
 COOLDOWN_DAYS = 90
 
-# Evergreen fallback list — 40 topics across 5 pillars
+# Evergreen topic list — emotionally-driven, high-search-intent topics across 5 pillars.
+# Format: keyword = the story angle (not just a plain topic), pillar = content category.
+# These are written the way a viewer types them when they're worried or motivated.
 EVERGREEN_TOPICS = [
-    # budgeting
-    {"keyword": "50/30/20 budget rule explained", "pillar": "budgeting"},
-    {"keyword": "zero based budgeting for beginners", "pillar": "budgeting"},
-    {"keyword": "how to stop living paycheck to paycheck", "pillar": "budgeting"},
-    {"keyword": "emergency fund how much to save", "pillar": "budgeting"},
-    {"keyword": "sinking funds personal finance", "pillar": "budgeting"},
-    {"keyword": "best budgeting apps 2026", "pillar": "budgeting"},
-    {"keyword": "how to save money on groceries", "pillar": "budgeting"},
-    {"keyword": "high yield savings account explained", "pillar": "budgeting"},
-    # debt
-    {"keyword": "debt avalanche vs debt snowball method", "pillar": "debt"},
-    {"keyword": "how to pay off student loans fast", "pillar": "debt"},
-    {"keyword": "credit card debt payoff strategy", "pillar": "debt"},
-    {"keyword": "what is a good credit score", "pillar": "debt"},
-    {"keyword": "how to improve credit score fast", "pillar": "debt"},
-    {"keyword": "should you pay off debt or invest", "pillar": "debt"},
-    {"keyword": "how to negotiate credit card interest rate", "pillar": "debt"},
-    {"keyword": "personal loan vs credit card debt", "pillar": "debt"},
-    # investing
-    {"keyword": "roth ira for beginners 2026", "pillar": "investing"},
-    {"keyword": "how to start investing with 1000 dollars", "pillar": "investing"},
-    {"keyword": "index funds explained for beginners", "pillar": "investing"},
-    {"keyword": "401k contribution limits 2026", "pillar": "investing"},
-    {"keyword": "dollar cost averaging strategy explained", "pillar": "investing"},
-    {"keyword": "compound interest explained with examples", "pillar": "investing"},
-    {"keyword": "ETF vs mutual fund which is better", "pillar": "investing"},
-    {"keyword": "what is a brokerage account", "pillar": "investing"},
-    # tax
-    {"keyword": "tax deductions for salaried employees 2026", "pillar": "tax"},
-    {"keyword": "roth ira vs traditional ira tax benefits", "pillar": "tax"},
-    {"keyword": "how to file taxes for beginners", "pillar": "tax"},
-    {"keyword": "what is the standard deduction 2026", "pillar": "tax"},
-    {"keyword": "HSA tax benefits explained", "pillar": "tax"},
-    {"keyword": "how to reduce taxable income legally", "pillar": "tax"},
-    {"keyword": "capital gains tax explained simply", "pillar": "tax"},
-    {"keyword": "401k tax benefits for young professionals", "pillar": "tax"},
-    # career_income
-    {"keyword": "how to negotiate salary offer", "pillar": "career_income"},
-    {"keyword": "first salary what to do with it", "pillar": "career_income"},
-    {"keyword": "how to ask for a raise successfully", "pillar": "career_income"},
-    {"keyword": "side hustle ideas for full time employees", "pillar": "career_income"},
-    {"keyword": "freelancing vs full time job income", "pillar": "career_income"},
-    {"keyword": "passive income ideas for beginners", "pillar": "career_income"},
-    {"keyword": "how to build wealth in your 20s", "pillar": "career_income"},
-    {"keyword": "financial goals for young professionals", "pillar": "career_income"},
+    # budgeting — pain points + "I finally figured this out" angles
+    {"keyword": "how much money should I have saved by 30", "pillar": "budgeting"},
+    {"keyword": "why I was broke every month even with a good salary", "pillar": "budgeting"},
+    {"keyword": "how to stop living paycheck to paycheck on a high income", "pillar": "budgeting"},
+    {"keyword": "I built a 6 month emergency fund in 12 months here is how", "pillar": "budgeting"},
+    {"keyword": "the real reason your savings account is losing you money", "pillar": "budgeting"},
+    {"keyword": "high yield savings account vs regular savings the actual math", "pillar": "budgeting"},
+    {"keyword": "how to budget when your income is irregular", "pillar": "budgeting"},
+    {"keyword": "the 50 30 20 rule is wrong for most people here is why", "pillar": "budgeting"},
+    # debt — fear and relief angles
+    {"keyword": "I paid off 28k in debt in 18 months on a 60k salary", "pillar": "debt"},
+    {"keyword": "why paying minimum payments is the worst financial decision you can make", "pillar": "debt"},
+    {"keyword": "should I pay off debt or invest the honest answer", "pillar": "debt"},
+    {"keyword": "how to get out of credit card debt when you are already overwhelmed", "pillar": "debt"},
+    {"keyword": "the credit score number that actually matters for getting a mortgage", "pillar": "debt"},
+    {"keyword": "debt avalanche vs debt snowball which one actually works faster", "pillar": "debt"},
+    {"keyword": "how I improved my credit score by 100 points in 6 months", "pillar": "debt"},
+    {"keyword": "why your student loan payoff strategy might be costing you more money", "pillar": "debt"},
+    # investing — regret, urgency, and counterintuitive insights
+    {"keyword": "why I regret not investing in my 20s the actual numbers", "pillar": "investing"},
+    {"keyword": "roth ira vs 401k which one should you do first", "pillar": "investing"},
+    {"keyword": "what nobody tells you about your first 401k contribution", "pillar": "investing"},
+    {"keyword": "how to start investing with 500 dollars the exact steps I took", "pillar": "investing"},
+    {"keyword": "index funds vs picking stocks the math ends the debate", "pillar": "investing"},
+    {"keyword": "the compound interest graph that will make you start investing today", "pillar": "investing"},
+    {"keyword": "why I stopped trying to time the market and what I do instead", "pillar": "investing"},
+    {"keyword": "what is the difference between a Roth IRA and a brokerage account", "pillar": "investing"},
+    # tax — money left on the table angles
+    {"keyword": "tax deductions you are probably missing as a salaried employee", "pillar": "tax"},
+    {"keyword": "how to legally pay less taxes in your 20s and 30s", "pillar": "tax"},
+    {"keyword": "HSA is the most underrated retirement account nobody talks about", "pillar": "tax"},
+    {"keyword": "roth ira vs traditional ira which one saves you more money in taxes", "pillar": "tax"},
+    {"keyword": "the tax mistake most first time investors make in a brokerage account", "pillar": "tax"},
+    {"keyword": "how to avoid capital gains tax on investments legally", "pillar": "tax"},
+    {"keyword": "what the standard deduction actually means for your paycheck", "pillar": "tax"},
+    {"keyword": "how contributing to a 401k changes your take home pay the real numbers", "pillar": "tax"},
+    # career_income — first job regret and negotiation wins
+    {"keyword": "the first salary mistake that cost me 15k and how to avoid it", "pillar": "career_income"},
+    {"keyword": "how to negotiate your first salary even when you have no experience", "pillar": "career_income"},
+    {"keyword": "what to do with your first real paycheck the exact order", "pillar": "career_income"},
+    {"keyword": "how to ask for a raise and actually get it with a script that works", "pillar": "career_income"},
+    {"keyword": "why your job salary will never build wealth without this one change", "pillar": "career_income"},
+    {"keyword": "realistic side hustles that made me an extra 1000 a month", "pillar": "career_income"},
+    {"keyword": "how to build wealth in your 20s even if you are starting from zero", "pillar": "career_income"},
+    {"keyword": "the financial order of operations I wish I had at 22", "pillar": "career_income"},
 ]
 
 # pytrends category code for Finance
@@ -108,76 +110,108 @@ def _pick_weighted(candidates: list[dict], weights: dict) -> dict:
     return scored[-1][0]
 
 
-def _fetch_pytrends(used_topics: list[dict]) -> list[dict]:
-    """Fetch trending finance topics from pytrends. Returns list of dicts with keyword+pillar."""
+def _fetch_pytrends_boost(available: list[dict]) -> list[dict]:
+    """
+    Use pytrends interest-over-time to boost the weight of currently trending
+    topics from our curated list. Returns the same list with a 'trend_score'
+    added to topics that are trending this week.
+
+    This does NOT discover new topics — it only re-ranks existing curated ones.
+    """
     try:
         from pytrends.request import TrendReq
     except ImportError:
-        logger.warning("pytrends not installed, skipping Google Trends fetch")
-        return []
+        logger.warning("pytrends not installed, skipping trend boost")
+        return available
 
-    candidates = []
+    # pytrends build_payload accepts max 5 keywords.
+    # Sample randomly from the full available pool so list order doesn't bias scoring.
+    sample = random.sample(available, min(5, len(available)))
+    kw_list = [t["keyword"][:50] for t in sample]  # pytrends has a length limit
+
     for attempt in range(3):
         try:
             pt = TrendReq(hl="en-US", tz=360)
             pt.build_payload(
-                kw_list=["personal finance", "investing", "credit card debt", "roth ira", "budget"],
+                kw_list=kw_list,
                 cat=FINANCE_CATEGORY,
                 timeframe="now 7-d",
                 geo="US",
             )
-            related = pt.related_queries()
-            for kw, data in related.items():
-                if data and data.get("rising") is not None:
-                    for _, row in data["rising"].iterrows():
-                        keyword = str(row.get("query", "")).strip()
-                        if keyword and len(keyword) > 5:
-                            slug = _slugify(keyword)
-                            if not _is_on_cooldown(slug, used_topics):
-                                candidates.append({"keyword": keyword, "pillar": "investing", "slug": slug})
-            if candidates:
-                return candidates
+            iot = pt.interest_over_time()
+            if iot.empty:
+                return available
+
+            # Compute mean interest score for each sampled keyword
+            scores = {}
+            for kw in kw_list:
+                if kw in iot.columns:
+                    scores[kw] = float(iot[kw].mean())
+
+            # Attach trend_score to matching topics
+            boosted = []
+            for topic in available:
+                t = dict(topic)
+                match = next((s for k, s in scores.items() if k == topic["keyword"][:50]), None)
+                if match is not None:
+                    t["trend_score"] = match
+                boosted.append(t)
+
+            logger.info("Trend boost applied to %d topics", len(scores))
+            return boosted
+
         except Exception as exc:
             wait = 2 ** attempt + random.uniform(0, 1)
-            logger.warning("pytrends attempt %d failed: %s — retrying in %.1fs", attempt + 1, exc, wait)
+            logger.warning("pytrends boost attempt %d failed: %s — retrying in %.1fs", attempt + 1, exc, wait)
             time.sleep(wait)
 
-    logger.warning("pytrends failed after 3 attempts, falling back to evergreen list")
-    return []
+    logger.warning("pytrends boost failed after 3 attempts — using unweighted list")
+    return available
 
 
 def pick_topic() -> dict:
     """
     Returns a topic dict: {keyword, pillar, slug}.
-    Priority: pytrends trending → weighted evergreen fallback.
-    Filters out any topic on 90-day cooldown.
+    Always picks from the curated EVERGREEN_TOPICS list (filtered by 90-day cooldown).
+    Uses pytrends interest-over-time to boost currently trending curated topics,
+    combined with optimizer pillar weights.
     """
     used = _load_used_topics()
     weights = _load_weights()
 
-    # Try pytrends first
-    trending = _fetch_pytrends(used)
-    if trending:
-        topic = _pick_weighted(trending, weights)
-        if "slug" not in topic:
-            topic["slug"] = _slugify(topic["keyword"])
-        logger.info("Picked trending topic: %s [%s]", topic["keyword"], topic["pillar"])
-        return topic
-
-    # Weighted evergreen fallback
+    # Filter out topics on 90-day cooldown
     available = [
         t for t in EVERGREEN_TOPICS
         if not _is_on_cooldown(_slugify(t["keyword"]), used)
     ]
     if not available:
-        # All topics on cooldown — pick the one that expired soonest
         logger.warning("All topics on cooldown, reusing earliest-expiring topic")
         available = list(EVERGREEN_TOPICS)
 
-    topic = _pick_weighted(available, weights)
+    # Optionally boost by current trending interest (re-ranks curated list only)
+    available = _fetch_pytrends_boost(available)
+
+    # Build effective weights: pillar weight × trend_score (if present)
+    scored = []
+    for t in available:
+        pillar_w = weights.get(t.get("pillar", ""), 1.0)
+        trend_w = t.get("trend_score", 50.0) / 50.0  # normalize: 50 = neutral
+        scored.append((t, pillar_w * trend_w))
+
+    total = sum(w for _, w in scored)
+    r = random.uniform(0, total)
+    cumulative = 0.0
+    topic = scored[-1][0]
+    for t, w in scored:
+        cumulative += w
+        if r <= cumulative:
+            topic = t
+            break
+
     topic = dict(topic)
+    topic.pop("trend_score", None)  # clean up internal field
     topic["slug"] = _slugify(topic["keyword"])
-    logger.info("Picked evergreen topic: %s [%s]", topic["keyword"], topic["pillar"])
+    logger.info("Picked topic: %s [%s]", topic["keyword"], topic["pillar"])
     return topic
 
 

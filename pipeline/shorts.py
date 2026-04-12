@@ -2,14 +2,16 @@
 shorts.py — Extract a Short clip from an approved long-form video.
 
 Steps:
-1. Find best 35–60s window (highest-retention segment; fallback: first 55s)
+1. Find best 35–60s window via Claude (picks highest-value shareable moment from script)
 2. Re-encode to vertical 9:16 (1080x1920) with black pillarbox
-3. Burn in captions from script hook summary (top-third safe zone)
+3. Burn in captions from the best-moment summary (top-third safe zone)
 4. Overlay CTA text: "Watch full video ↑ Link in bio" (bottom-third safe zone)
 5. Save to workspace/output/short_video.mp4
 """
 import json
 import logging
+import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -36,6 +38,85 @@ def _ffprobe_duration(path: Path) -> float:
         capture_output=True, text=True, timeout=30, check=True,
     )
     return float(json.loads(result.stdout)["format"]["duration"])
+
+
+def _ask_claude_best_moment(pipeline_json: dict) -> tuple[float, str]:
+    """
+    Ask Claude to identify the single best 45-60s shareable moment in the script.
+    Returns (start_seconds_estimate, caption_text).
+    Falls back to (DEFAULT_START_S, hook_summary) on any error.
+    """
+    fallback_caption = pipeline_json.get("hook_summary", pipeline_json.get("title", ""))
+    fallback_start = DEFAULT_START_S
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        logger.info("ANTHROPIC_API_KEY not set — using default Shorts window")
+        return fallback_start, fallback_caption
+
+    script = pipeline_json.get("script", "")
+    title = pipeline_json.get("title", "")
+    hook_summary = pipeline_json.get("hook_summary", "")
+
+    if not script:
+        return fallback_start, fallback_caption
+
+    # Estimate words-per-second for timing (voiceover is ~150 wpm = 2.5 words/sec)
+    WPS = 2.5
+
+    prompt = f"""You are a YouTube Shorts editor. Given this script for a long-form finance video, identify the single best 45-60 second clip to make a standalone YouTube Short.
+
+The best Short moment:
+- Contains a surprising, counterintuitive, or emotionally resonant insight
+- Is self-contained (viewer understands the point without watching the full video)
+- Has a clear "wow" or "I never thought of it that way" reaction
+- Is NOT the very beginning (the hook is for the long video, not a Short)
+
+Video title: {title}
+Hook summary: {hook_summary}
+
+Script (word positions matter for timing):
+---
+{script[:3000]}
+---
+
+Respond with ONLY this JSON (no explanation):
+{{
+  "start_word_index": <integer — index of the first word of the best clip>,
+  "caption": "<10 words max — punchy caption that captures the insight for the Short>",
+  "reason": "<one sentence why this is the best moment>"
+}}"""
+
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=api_key)
+        response = client.messages.create(
+            model="claude-haiku-4-5",
+            max_tokens=256,
+            temperature=0.3,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = response.content[0].text
+        raw = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.IGNORECASE)
+        raw = re.sub(r"\s*```$", "", raw.strip())
+        match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if not match:
+            raise ValueError("No JSON in Claude response")
+        data = json.loads(match.group())
+
+        word_index = int(data.get("start_word_index", 0))
+        caption = str(data.get("caption", fallback_caption)).strip()
+
+        # Convert word index to seconds
+        start_s = max(fallback_start, word_index / WPS)
+
+        logger.info("Claude Shorts picker: start=%.1fs caption='%s' reason='%s'",
+                    start_s, caption, data.get("reason", ""))
+        return start_s, caption or fallback_caption
+
+    except Exception as exc:
+        logger.warning("Claude Shorts picker failed: %s — using default window", exc)
+        return fallback_start, fallback_caption
 
 
 def _pick_window(video_path: Path, preferred_start: float = 0.0) -> tuple[float, float]:
@@ -70,10 +151,17 @@ def _build_ffmpeg_cmd(
     """
     Build the ffmpeg command to produce a vertical Short with burned-in text.
     Uses drawtext filter for caption and CTA overlay.
-    Sanitizes text (escapes single quotes and colons for ffmpeg filter syntax).
+    Sanitizes text (escapes backslashes, %, single quotes, and colons for ffmpeg drawtext).
     """
     def _esc(text: str) -> str:
-        return text.replace("\\", "\\\\").replace("'", "\\'").replace(":", "\\:")
+        # Order matters: backslash first, then chars special to ffmpeg drawtext
+        # % must become %% — drawtext treats % as a strftime format specifier
+        return (
+            text.replace("\\", "\\\\")
+                .replace("%", "%%")
+                .replace("'", "\\'")
+                .replace(":", "\\:")
+        )
 
     caption_safe = _esc(caption_text)
     cta_safe = _esc(cta_text)
@@ -112,20 +200,27 @@ def create_short(
     video_path: Path,
     audio_path: Path,
     pipeline_json: dict,
-    preferred_start: float = 0.0,
+    preferred_start: float | None = None,
     cta_text: str = "Watch full video ↑ Link in bio",
     output_path: Path = OUTPUT_SHORT,
 ) -> Path:
     """
     Create a YouTube Short from a long-form video.
+    Uses Claude to pick the best 45-60s shareable moment from the script.
     Returns path to the short output file.
     """
-    caption_text = pipeline_json.get("hook_summary", pipeline_json.get("title", ""))
+    # Use Claude to find best moment; override with preferred_start if explicitly passed
+    if preferred_start is None:
+        claude_start, caption_text = _ask_claude_best_moment(pipeline_json)
+    else:
+        claude_start = preferred_start
+        caption_text = pipeline_json.get("hook_summary", pipeline_json.get("title", ""))
+
     # Cap caption at 80 chars to fit on screen
     if len(caption_text) > 80:
         caption_text = caption_text[:77] + "..."
 
-    start, duration = _pick_window(video_path, preferred_start)
+    start, duration = _pick_window(video_path, claude_start)
     logger.info("Short window: start=%.1fs duration=%.1fs", start, duration)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)

@@ -14,24 +14,47 @@ MODEL = "claude-haiku-4-5"
 PACKAGE_CANDIDATES_PATH = Path("workspace/package_candidates.json")
 
 PACKAGING_PROMPT = """\
-You are a YouTube packaging expert for a personal finance channel called ClearWealth targeting young professionals (25-35).
+You are a YouTube packaging expert for ClearWealth, a personal finance channel for young professionals (25-35).
 
-Given the script data below, generate EXACTLY 3 title variants and 3 thumbnail text concepts.
+Your job is to write titles and thumbnails that make someone stop scrolling and click — without being misleading.
 
-Rules:
-- Titles must be 45-60 characters, no clickbait, accurately reflect content
-- Thumbnail text must be 4-7 words, punchy, matches video content (no bait-and-switch)
-- Each variant must feel meaningfully different (not just minor word changes)
-- Variant 1 = benefit-focused ("How to...", "Why your...")
-- Variant 2 = curiosity/myth-busting ("The truth about...", "Stop doing...")
-- Variant 3 = specificity/number-led ("$X hack:", "5 steps to...")
+## Pro YouTuber Title Formula
+The best-performing personal finance titles combine: SPECIFIC NUMBER + EMOTIONAL HOOK + COUNTERINTUITIVE ANGLE.
 
-Return ONLY this JSON:
+Examples of great titles (use these as a style guide, not templates to copy):
+- "I Waited Until 29 to Invest. Here's What It Cost Me."
+- "Why Paying Off Debt First Is Wrong (For Most People)"
+- "The $47 Monthly Difference Between Rich and Average at 60"
+- "3 Signs You're Investing the Wrong Way (I Did All 3)"
+- "Your 401k Match Is Leaving You Broke. Here's Why."
+
+## Variant Rules
+- Variant 1 = PERSONAL STORY angle: First person "I", regret/win, specific dollar amount or age
+  Example: "I Lost $34,000 Not Knowing This About My 401k"
+- Variant 2 = COUNTERINTUITIVE angle: Challenge the conventional wisdom, use "Wrong", "Actually", "Myth"
+  Example: "Why Saving 20% of Your Income Is Actually Bad Advice"
+- Variant 3 = SPECIFIC NUMBER + FEAR/URGENCY angle: A number that makes the stakes real
+  Example: "The $180,000 Mistake 73% of People Make in Their 20s"
+
+## Title Rules
+- 45-60 characters (longer is fine if powerful, max 70)
+- Must accurately reflect the video content — no bait-and-switch
+- No vague words: "good", "some", "certain", "various", "better"
+- No ALL CAPS beyond 2 words
+- No ellipsis abuse ("...")
+
+## Thumbnail Text Rules
+- 4-6 words max (must be readable at 320px wide)
+- Must feel like a gut punch or "wait, what?" moment
+- Pair with a strong emotion word: WRONG, MISTAKE, REAL, HIDDEN, ACTUALLY
+- Examples: "You're Doing This Wrong", "$34K Gone. Here's Why.", "The Number Nobody Shows You"
+
+Return ONLY this JSON (no explanation, no markdown):
 {
   "default_index": 0,
-  "titles": ["<title1>", "<title2>", "<title3>"],
+  "titles": ["<variant1>", "<variant2>", "<variant3>"],
   "thumbnail_texts": ["<thumb1>", "<thumb2>", "<thumb3>"],
-  "description_hook": "<First 2 sentences of description — high-CTR version>"
+  "description_hook": "<First 2 punchy sentences for the YouTube description — hook the reader, include a key number>"
 }
 
 SCRIPT DATA:

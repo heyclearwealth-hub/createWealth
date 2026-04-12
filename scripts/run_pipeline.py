@@ -158,7 +158,7 @@ def main() -> None:
     # Step 6: Footage
     from pipeline.footage import download as dl_footage
 
-    clip_paths = dl_footage(topic)
+    clip_paths = dl_footage(topic, script_data=script_data)
     if not clip_paths:
         logger.error("No footage downloaded — aborting")
         sys.exit(1)

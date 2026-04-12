@@ -4,6 +4,7 @@ footage.py — Downloads stock footage from Pexels API with ffprobe validation.
 import json
 import logging
 import os
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -107,26 +108,92 @@ def _ffprobe_validate(path: Path) -> dict | None:
         return None
 
 
-def download(topic: dict, target_count: int = TARGET_CLIP_COUNT) -> list[Path]:
+# Scene-based pillar queries — describe what a viewer would see on screen,
+# not the topic keyword. Pexels searches visual scenes, not concepts.
+PILLAR_VISUAL_QUERIES = {
+    "budgeting": [
+        "person looking at bills on laptop",
+        "grocery shopping cart supermarket",
+        "person writing in notebook at desk",
+        "smartphone banking app hands",
+        "jar of coins savings",
+    ],
+    "debt": [
+        "person stressed looking at credit card bills",
+        "scissors cutting credit card",
+        "person paying with credit card store",
+        "calculator pen financial documents desk",
+        "person relieved happy at computer",
+    ],
+    "investing": [
+        "person using smartphone stock app",
+        "graphs rising chart screen closeup",
+        "young professional laptop coffee shop",
+        "hands typing on laptop finance",
+        "city skyline buildings business",
+    ],
+    "tax": [
+        "person filling out tax forms paperwork",
+        "calculator documents desk pen",
+        "person on laptop tax filing",
+        "folders documents organized office",
+        "person looking at pay stub salary",
+    ],
+    "career_income": [
+        "job interview handshake office",
+        "business meeting professional team",
+        "person celebrating success office",
+        "salary negotiation two people talking",
+        "young professional working laptop office",
+    ],
+}
+
+# Generic fallback queries — always cinematic and visually engaging
+GENERIC_VISUAL_QUERIES = [
+    "person walking city urban lifestyle",
+    "coffee shop working morning",
+    "sunrise cityscape motivation",
+]
+
+
+def download(topic: dict, target_count: int = TARGET_CLIP_COUNT, script_data: dict | None = None) -> list[Path]:
     """
     Search and download stock footage clips relevant to the topic.
     Returns a list of validated clip paths.
+
+    If script_data is provided, extracts 2-3 scene-specific queries from the
+    hook_summary and worked example for more relevant B-roll.
     """
-    keyword = topic.get("keyword", "personal finance")
     pillar = topic.get("pillar", "")
 
-    # Build search queries from topic + pillar
-    queries = [keyword]
-    pillar_queries = {
-        "budgeting": "budgeting money savings",
-        "debt": "credit card money debt",
-        "investing": "stock market investing growth",
-        "tax": "tax documents finance",
-        "career_income": "office work career professional",
-    }
-    if pillar in pillar_queries:
-        queries.append(pillar_queries[pillar])
-    queries.append("personal finance money")  # generic fallback
+    # Build query list: script-aware queries first, then pillar visuals, then generic
+    queries: list[str] = []
+
+    # Script-aware queries from hook and worked example context
+    if script_data:
+        hook = script_data.get("hook_summary", "")
+        # Extract the core visual scene from hook — look for dollar amounts, people, actions
+        if hook:
+            # Derive a short visual search phrase from the hook
+            # If hook mentions a person scenario, make it visual
+            hook_lower = hook.lower()
+            if any(w in hook_lower for w in ["savings account", "save", "saving"]):
+                queries.append("person checking savings account mobile phone")
+            elif any(w in hook_lower for w in ["debt", "pay off", "loan"]):
+                queries.append("person stressed bills financial paperwork")
+            elif any(w in hook_lower for w in ["invest", "roth", "401k", "ira", "stock"]):
+                queries.append("young person investing smartphone app")
+            elif any(w in hook_lower for w in ["tax", "deduct", "refund"]):
+                queries.append("person filing taxes documents computer")
+            elif any(w in hook_lower for w in ["salary", "raise", "income", "earn"]):
+                queries.append("professional salary negotiation office")
+
+    # Add pillar-specific visual queries
+    pillar_visuals = PILLAR_VISUAL_QUERIES.get(pillar, [])
+    queries.extend(pillar_visuals)
+
+    # Add generic fallbacks
+    queries.extend(GENERIC_VISUAL_QUERIES)
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     valid_clips: list[Path] = []
