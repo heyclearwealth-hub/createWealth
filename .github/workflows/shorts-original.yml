@@ -1,0 +1,76 @@
+name: shorts-original
+
+on:
+  schedule:
+    # Short 1: 10:00 UTC daily
+    - cron: "0 10 * * *"
+    # Short 2: 18:00 UTC daily
+    - cron: "0 18 * * *"
+  workflow_dispatch:
+    inputs:
+      topic:
+        description: "Override topic (optional, must match FINANCE_TOPICS list)"
+        default: ""
+      dry_run:
+        description: "Set to '1' to skip YouTube upload"
+        default: "0"
+
+permissions:
+  contents: read
+
+jobs:
+  generate-short:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install system fonts
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y fonts-liberation fonts-dejavu-core
+
+      - name: Generate and upload Short
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+          VIDEO_PRIVACY_STATUS: ${{ vars.SHORTS_PRIVACY_STATUS || 'public' }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || '0' }}
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          TOPIC_ARG=""
+          if [ -n "${{ github.event.inputs.topic }}" ]; then
+            TOPIC_ARG="--topic \"${{ github.event.inputs.topic }}\""
+          fi
+
+          DRY_RUN_FLAG=""
+          if [ "$DRY_RUN" = "1" ]; then
+            DRY_RUN_FLAG="--dry-run"
+          fi
+
+          python scripts/run_shorts_original.py $TOPIC_ARG $DRY_RUN_FLAG
+
+      - name: Upload Short artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: short-original-${{ github.run_id }}
+          path: |
+            workspace/output/short_original.mp4
+            workspace/output/short_upload_payload.json
+          retention-days: 7
+          if-no-files-found: warn
