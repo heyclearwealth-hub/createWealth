@@ -43,6 +43,7 @@ jobs:
           IMPRESSION_MIN_FOR_EXPERIMENT: ${{ vars.IMPRESSION_MIN_FOR_EXPERIMENT }}
           NATIVE_AB_SLA_HOURS: ${{ vars.NATIVE_AB_SLA_HOURS }}
           PACKAGING_EXPERIMENT_MODE: ${{ vars.PACKAGING_EXPERIMENT_MODE }}
+          PYTHONPATH: ${{ github.workspace }}
         run: python scripts/run_analytics.py
 
       - name: Commit updated data to pipeline-data branch

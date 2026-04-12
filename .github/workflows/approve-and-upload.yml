@@ -138,6 +138,7 @@ jobs:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          PYTHONPATH: ${{ github.workspace }}
         run: python scripts/run_upload.py
 
       - name: Auto-upload Short from same approved artifact
@@ -147,6 +148,7 @@ jobs:
           YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
           YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
           SHORTS_PRIVACY_STATUS: ${{ vars.SHORTS_PRIVACY_STATUS }}
+          PYTHONPATH: ${{ github.workspace }}
         run: python scripts/run_shorts.py
 
       - name: Sync performance data to pipeline-data branch
@@ -232,6 +234,7 @@ jobs:
           REJECT_REASON: ${{ needs.guard-check.outputs.reject_reason }}
           PIPELINE_SLUG: ${{ needs.guard-check.outputs.slug }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PYTHONPATH: ${{ github.workspace }}
         run: python scripts/run_feedback_sync.py
 
       - name: Commit feedback to pipeline-data branch

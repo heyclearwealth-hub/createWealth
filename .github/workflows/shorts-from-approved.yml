@@ -107,6 +107,7 @@ jobs:
           YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
           SHORTS_PRIVACY_STATUS: ${{ vars.SHORTS_PRIVACY_STATUS }}
           TARGET_LONG_VIDEO_ID: ${{ steps.select-candidate.outputs.long_video_id }}
+          PYTHONPATH: ${{ github.workspace }}
         run: python scripts/run_shorts.py
 
       - name: Sync performance data to pipeline-data branch

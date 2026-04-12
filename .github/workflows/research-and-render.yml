@@ -48,6 +48,7 @@ jobs:
           DRY_RUN: ${{ github.event.inputs.dry_run || '0' }}
           HOOK_SCORE_THRESHOLD: ${{ vars.HOOK_SCORE_THRESHOLD }}
           MAX_STARTUP_DELAY_SECONDS: ${{ vars.MAX_STARTUP_DELAY_SECONDS || '900' }}
+          PYTHONPATH: ${{ github.workspace }}
         run: python scripts/run_pipeline.py
 
       - name: Upload pipeline artifact
