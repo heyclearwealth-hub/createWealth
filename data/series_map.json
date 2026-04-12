@@ -1,24 +1,24 @@
 {
   "pillars": {
     "budgeting": {
-      "playlist_id": "REPLACE_WITH_BUDGETING_PLAYLIST_ID",
+      "playlist_id": "PLZpEXj28kQhdwbaUo2xE_EKIVXrRQfinw",
       "playlist_title": "ClearWealth: Budget & Save"
     },
     "debt": {
-      "playlist_id": "REPLACE_WITH_DEBT_PLAYLIST_ID",
+      "playlist_id": "PLZpEXj28kQhdeTLb2DCQBTm_vsRzWkVMS",
       "playlist_title": "ClearWealth: Get Out of Debt"
     },
     "investing": {
-      "playlist_id": "REPLACE_WITH_INVESTING_PLAYLIST_ID",
-      "playlist_title": "ClearWealth: Start Investing"
+      "playlist_id": "PLZpEXj28kQhdZUIrpaXA8c-qmpKukFsNG",
+      "playlist_title": "ClearWealth: Tax Benefits & Investing"
     },
     "tax": {
-      "playlist_id": "REPLACE_WITH_TAX_PLAYLIST_ID",
-      "playlist_title": "ClearWealth: Tax Strategies"
+      "playlist_id": "PLZpEXj28kQhdZUIrpaXA8c-qmpKukFsNG",
+      "playlist_title": "ClearWealth: Tax Benefits & Investing"
     },
     "career_income": {
-      "playlist_id": "REPLACE_WITH_CAREER_PLAYLIST_ID",
-      "playlist_title": "ClearWealth: Grow Your Income"
+      "playlist_id": "PLZpEXj28kQhfpaDEib3CsFKHseYuvaXEN",
+      "playlist_title": "ClearWealth: Earn More Money"
     }
   }
 }
