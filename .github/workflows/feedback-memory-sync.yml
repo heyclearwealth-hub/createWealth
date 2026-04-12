@@ -1,0 +1,62 @@
+name: feedback-memory-sync
+
+on:
+  issue_comment:
+    types: [created]
+  schedule:
+    - cron: "0 11 * * *"  # Daily at 11:00 UTC (for any missed syncs)
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: read
+
+jobs:
+  sync-reject:
+    # Only run on REJECT comments from approver on pipeline issues
+    if: |
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request == null &&
+      startsWith(github.event.issue.title, '[PIPELINE]') &&
+      github.event.comment.user.login == vars.PIPELINE_APPROVER_USERNAME &&
+      startsWith(github.event.comment.body, 'REJECT:')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Restore pipeline-data branch
+        run: |
+          git fetch origin pipeline-data 2>/dev/null || true
+          git checkout origin/pipeline-data -- data/ 2>/dev/null || true
+
+      - name: Sync reject feedback
+        env:
+          REJECT_REASON: ${{ github.event.comment.body }}
+          PIPELINE_SLUG: ${{ github.event.issue.title }}
+        run: |
+          # Strip "REJECT:" prefix
+          CLEAN=$(echo "${REJECT_REASON}" | sed 's/^REJECT://' | xargs)
+          REJECT_REASON="${CLEAN}" python scripts/run_feedback_sync.py
+
+      - name: Commit feedback to pipeline-data branch
+        run: |
+          git config user.email "github-actions@github.com"
+          git config user.name "github-actions[bot]"
+          git fetch origin pipeline-data 2>/dev/null || true
+          git checkout -B pipeline-data origin/pipeline-data 2>/dev/null || git checkout -b pipeline-data
+          git add data/review_feedback.json
+          git diff --cached --quiet && echo "No changes" || \
+            git commit -m "chore: sync reject feedback [skip ci]"
+          git push origin pipeline-data

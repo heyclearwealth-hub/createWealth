@@ -1,0 +1,95 @@
+name: research-and-render
+
+on:
+  schedule:
+    # Mon, Tue, Thu, Sat at 09:00 UTC
+    - cron: "0 9 * * 1,2,4,6"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Set to '1' to skip real API calls"
+        default: "0"
+
+permissions:
+  contents: write   # push to pipeline-data branch
+  issues: write     # create review issue
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install FFmpeg
+        run: sudo apt-get install -y ffmpeg
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Restore pipeline-data branch (topics / weights / budget)
+        run: |
+          git fetch origin pipeline-data 2>/dev/null || true
+          git checkout origin/pipeline-data -- data/ 2>/dev/null || true
+
+      - name: Run pipeline
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || '0' }}
+          HOOK_SCORE_THRESHOLD: ${{ vars.HOOK_SCORE_THRESHOLD }}
+          MAX_STARTUP_DELAY_SECONDS: ${{ vars.MAX_STARTUP_DELAY_SECONDS || '900' }}
+        run: python scripts/run_pipeline.py
+
+      - name: Upload pipeline artifact
+        id: upload-artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-${{ github.run_id }}
+          path: |
+            workspace/pipeline.json
+            workspace/voiceover.mp3
+            workspace/output/final_video.mp4
+            workspace/package_candidates.json
+          retention-days: 7
+
+      - name: Create review issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SLUG=$(python -c "import json; print(json.load(open('workspace/pipeline.json'))['slug'])")
+          HOOK=$(python -c "import json; print(json.load(open('workspace/pipeline.json')).get('hook_score','n/a'))")
+          TITLE="[PIPELINE] Review: ${SLUG}"
+          BODY="## ClearWealth Pipeline — Review Required
+
+          **Slug:** \`${SLUG}\`
+          **Hook score:** ${HOOK}
+          **Artifact:** pipeline-${{ github.run_id }}
+
+          ### Review Checklist
+          - [ ] Watched \`final_video.mp4\` (download from Actions artifact above)
+          - [ ] Hook grabs attention in first 10 seconds
+          - [ ] No misleading claims / earnings guarantees
+          - [ ] Finance disclaimer present in description
+          - [ ] Thumbnail concept matches video content
+
+          ### Approve or Reject
+          Reply with exactly \`APPROVE\` to upload, or \`REJECT: <reason>\` to skip.
+
+          ---
+          <!-- artifact-run-id: ${{ github.run_id }} -->"
+
+          gh issue create \
+            --title "${TITLE}" \
+            --body "${BODY}" \
+            --label "pipeline-review" \
+            --repo "${{ github.repository }}"

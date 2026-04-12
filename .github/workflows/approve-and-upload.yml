@@ -1,0 +1,246 @@
+name: approve-and-upload
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  issues: write
+  actions: read
+
+concurrency:
+  group: issue-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+# Guard 1: only on issues (not PRs), Guard 2: issue title starts [PIPELINE]
+# Guard 3: commenter is PIPELINE_APPROVER_USERNAME
+# Guard 4–7: handled in job steps
+jobs:
+  guard-check:
+    runs-on: ubuntu-latest
+    if: |
+      github.event.issue.pull_request == null &&
+      startsWith(github.event.issue.title, '[PIPELINE]') &&
+      github.event.comment.user.login == vars.PIPELINE_APPROVER_USERNAME &&
+      github.event.issue.state == 'open'
+    outputs:
+      action: ${{ steps.parse.outputs.action }}
+      run_id: ${{ steps.parse.outputs.run_id }}
+      reject_reason: ${{ steps.parse.outputs.reject_reason }}
+      slug: ${{ steps.parse.outputs.slug }}
+
+    steps:
+      - name: Parse comment action
+        id: parse
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+        run: |
+          # Guard 4: exact APPROVE check (case-sensitive, trimming only edges)
+          NORMALIZED=$(printf '%s' "${COMMENT_BODY}" | tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+
+          if [ "${NORMALIZED}" = "APPROVE" ]; then
+            echo "action=approve" >> "$GITHUB_OUTPUT"
+          elif printf '%s' "${NORMALIZED}" | grep -qE '^REJECT:'; then
+            REASON=$(printf '%s' "${NORMALIZED}" | sed 's/^REJECT://' | xargs)
+            echo "action=reject" >> "$GITHUB_OUTPUT"
+            echo "reject_reason=${REASON}" >> "$GITHUB_OUTPUT"
+          else
+            echo "action=ignore" >> "$GITHUB_OUTPUT"
+          fi
+
+          # Extract run_id from issue body
+          RUN_ID=$(printf '%s' "${ISSUE_BODY}" | grep -oP '(?<=artifact-run-id: )\d{7,}' || true)
+          echo "run_id=${RUN_ID}" >> "$GITHUB_OUTPUT"
+
+          # Extract slug from issue title
+          SLUG=$(echo "${{ github.event.issue.title }}" | sed 's/\[PIPELINE\] Review: //')
+          echo "slug=${SLUG}" >> "$GITHUB_OUTPUT"
+
+  upload:
+    needs: guard-check
+    if: needs.guard-check.outputs.action == 'approve'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    environment: youtube-upload  # protected environment — manual gate
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Restore pipeline-data branch (performance history)
+        run: |
+          git fetch origin pipeline-data 2>/dev/null || true
+          git checkout origin/pipeline-data -- data/ 2>/dev/null || true
+
+      - name: Guard 5: issue not already processed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          LABELS=$(gh issue view ${{ github.event.issue.number }} \
+            --json labels --jq '[.labels[].name] | join(",")' \
+            --repo "${{ github.repository }}")
+          if echo "$LABELS" | grep -qE "pipeline-uploading|pipeline-done"; then
+            echo "Issue already processed — exiting"
+            exit 0
+          fi
+
+      - name: Label issue as uploading
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue edit ${{ github.event.issue.number }} \
+            --add-label "pipeline-uploading" \
+            --repo "${{ github.repository }}"
+
+      - name: Validate run_id provenance
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python -c "
+          import sys, os
+          sys.path.insert(0, '.')
+          os.environ['GITHUB_TOKEN'] = os.environ['GITHUB_TOKEN']
+          from pipeline.issue_manager import validate_run_provenance
+          run_id = '${{ needs.guard-check.outputs.run_id }}'
+          if not validate_run_provenance(run_id):
+              print('Provenance validation failed for run_id:', run_id)
+              sys.exit(1)
+          print('Provenance validated:', run_id)
+          "
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: pipeline-${{ needs.guard-check.outputs.run_id }}
+          path: workspace/
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ needs.guard-check.outputs.run_id }}
+
+      - name: Upload to YouTube
+        env:
+          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          VIDEO_PRIVACY_STATUS: ${{ vars.VIDEO_PRIVACY_STATUS }}
+          SOURCE_RUN_ID: ${{ needs.guard-check.outputs.run_id }}
+          SOURCE_CONTENT_TYPE: long
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: python scripts/run_upload.py
+
+      - name: Auto-upload Short from same approved artifact
+        if: success() && vars.AUTO_UPLOAD_SHORT_AFTER_APPROVAL == '1'
+        env:
+          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          SHORTS_PRIVACY_STATUS: ${{ vars.SHORTS_PRIVACY_STATUS }}
+        run: python scripts/run_shorts.py
+
+      - name: Sync performance data to pipeline-data branch
+        if: success()
+        run: |
+          git config user.email "github-actions@github.com"
+          git config user.name "github-actions[bot]"
+
+          mkdir -p .tmp-data
+          cp -f data/video_performance.json .tmp-data/video_performance.json
+          cp -f data/api_budget.json .tmp-data/api_budget.json 2>/dev/null || true
+
+          git fetch origin pipeline-data 2>/dev/null || true
+          git checkout -B pipeline-data origin/pipeline-data 2>/dev/null || git checkout -b pipeline-data
+
+          mkdir -p data
+          cp -f .tmp-data/video_performance.json data/video_performance.json
+          cp -f .tmp-data/api_budget.json data/api_budget.json 2>/dev/null || true
+
+          git add data/video_performance.json data/api_budget.json
+          git diff --cached --quiet && echo "No performance data changes" || \
+            git commit -m "chore: sync performance data [skip ci]"
+          git push origin pipeline-data
+
+      - name: Label issue as done
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue edit ${{ github.event.issue.number }} \
+            --add-label "pipeline-done" \
+            --remove-label "pipeline-uploading" \
+            --repo "${{ github.repository }}"
+
+      - name: Handle upload failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue comment ${{ github.event.issue.number }} \
+            --body "❌ Upload failed. Check Actions logs for details. Issue remains open for retry." \
+            --repo "${{ github.repository }}"
+          gh issue edit ${{ github.event.issue.number }} \
+            --remove-label "pipeline-uploading" \
+            --repo "${{ github.repository }}"
+
+  handle-reject:
+    needs: guard-check
+    if: needs.guard-check.outputs.action == 'reject'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Restore pipeline-data branch
+        run: |
+          git fetch origin pipeline-data 2>/dev/null || true
+          git checkout origin/pipeline-data -- data/ 2>/dev/null || true
+
+      - name: Label issue as rejected
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue edit ${{ github.event.issue.number }} \
+            --add-label "pipeline-rejected" \
+            --repo "${{ github.repository }}"
+          gh issue comment ${{ github.event.issue.number }} \
+            --body "🚫 Rejected. Reason logged for next pipeline run." \
+            --repo "${{ github.repository }}"
+
+      - name: Sync reject feedback
+        env:
+          REJECT_REASON: ${{ needs.guard-check.outputs.reject_reason }}
+          PIPELINE_SLUG: ${{ needs.guard-check.outputs.slug }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python scripts/run_feedback_sync.py
+
+      - name: Commit feedback to pipeline-data branch
+        run: |
+          git config user.email "github-actions@github.com"
+          git config user.name "github-actions[bot]"
+          git fetch origin pipeline-data 2>/dev/null || true
+          git checkout -B pipeline-data origin/pipeline-data 2>/dev/null || git checkout -b pipeline-data
+          git add data/review_feedback.json
+          git diff --cached --quiet && echo "No feedback changes" || \
+            git commit -m "chore: sync reject feedback [skip ci]"
+          git push origin pipeline-data

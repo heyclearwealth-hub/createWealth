@@ -1,0 +1,39 @@
+name: monthly-ypp-audit
+
+on:
+  schedule:
+    - cron: "0 8 1 * *"  # First day of each month at 08:00 UTC
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Restore pipeline-data branch
+        run: |
+          git fetch origin pipeline-data 2>/dev/null || true
+          git checkout origin/pipeline-data -- data/ 2>/dev/null || true
+
+      - name: Run monthly audit
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: python scripts/run_monthly_audit.py

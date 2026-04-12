@@ -1,0 +1,26 @@
+BACKGROUND MUSIC LICENSE
+========================
+
+IMPORTANT: Before adding bgmusic.mp3, fill in this file with the track details.
+
+Track name   : [REPLACE WITH TRACK NAME]
+Artist       : [REPLACE WITH ARTIST NAME]
+Source URL   : [REPLACE WITH DIRECT DOWNLOAD URL]
+License      : [YouTube Audio Library free-to-use / Pixabay Content License]
+
+Allowed sources ONLY:
+  1. YouTube Audio Library — https://www.youtube.com/audiolibrary
+     Pre-cleared for monetized YouTube. No attribution required for most tracks.
+
+  2. Pixabay Music — https://pixabay.com/music/
+     License: Pixabay Content License (NOT CC0).
+     Read full terms at https://pixabay.com/service/license-summary/ before use.
+     Allows free commercial use; attribution not required but appreciated.
+
+DO NOT use any other source. Copyright strikes can demonetize the entire channel.
+
+After downloading:
+  - Rename file to bgmusic.mp3
+  - Place at pipeline/assets/bgmusic.mp3
+  - Update this file with the track details above
+  - Commit both files together

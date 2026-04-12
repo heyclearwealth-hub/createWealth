@@ -1,0 +1,57 @@
+name: analytics-and-optimize
+
+on:
+  schedule:
+    - cron: "0 10 * * *"  # Daily at 10:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write  # push optimized data to pipeline-data branch
+
+jobs:
+  optimize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Restore pipeline-data branch
+        run: |
+          git fetch origin pipeline-data 2>/dev/null || true
+          git checkout origin/pipeline-data -- data/ 2>/dev/null || true
+
+      - name: Run analytics and optimizer
+        env:
+          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          DAILY_API_QUOTA_BUDGET: ${{ vars.DAILY_API_QUOTA_BUDGET }}
+          WATCH_TIME_PER_IMPRESSION_FLOOR: ${{ vars.WATCH_TIME_PER_IMPRESSION_FLOOR }}
+          RETENTION_30S_FLOOR: ${{ vars.RETENTION_30S_FLOOR }}
+          END_SCREEN_CTR_FLOOR: ${{ vars.END_SCREEN_CTR_FLOOR }}
+          IMPRESSION_MIN_FOR_EXPERIMENT: ${{ vars.IMPRESSION_MIN_FOR_EXPERIMENT }}
+          NATIVE_AB_SLA_HOURS: ${{ vars.NATIVE_AB_SLA_HOURS }}
+          PACKAGING_EXPERIMENT_MODE: ${{ vars.PACKAGING_EXPERIMENT_MODE }}
+        run: python scripts/run_analytics.py
+
+      - name: Commit updated data to pipeline-data branch
+        run: |
+          git config user.email "github-actions@github.com"
+          git config user.name "github-actions[bot]"
+          git fetch origin pipeline-data 2>/dev/null || true
+          git checkout -B pipeline-data origin/pipeline-data 2>/dev/null || git checkout -b pipeline-data
+          git add data/
+          git diff --cached --quiet && echo "No data changes" || \
+            git commit -m "chore: analytics update $(date -u +%Y-%m-%d) [skip ci]"
+          git push origin pipeline-data

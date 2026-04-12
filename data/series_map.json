@@ -1,0 +1,24 @@
+{
+  "pillars": {
+    "budgeting": {
+      "playlist_id": "REPLACE_WITH_BUDGETING_PLAYLIST_ID",
+      "playlist_title": "ClearWealth: Budget & Save"
+    },
+    "debt": {
+      "playlist_id": "REPLACE_WITH_DEBT_PLAYLIST_ID",
+      "playlist_title": "ClearWealth: Get Out of Debt"
+    },
+    "investing": {
+      "playlist_id": "REPLACE_WITH_INVESTING_PLAYLIST_ID",
+      "playlist_title": "ClearWealth: Start Investing"
+    },
+    "tax": {
+      "playlist_id": "REPLACE_WITH_TAX_PLAYLIST_ID",
+      "playlist_title": "ClearWealth: Tax Strategies"
+    },
+    "career_income": {
+      "playlist_id": "REPLACE_WITH_CAREER_PLAYLIST_ID",
+      "playlist_title": "ClearWealth: Grow Your Income"
+    }
+  }
+}

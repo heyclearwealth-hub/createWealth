@@ -1,0 +1,15 @@
+{
+  "pillars": {
+    "budgeting": 1.0,
+    "debt": 1.0,
+    "investing": 1.0,
+    "tax": 1.0,
+    "career_income": 1.0
+  },
+  "hook_templates": {
+    "myth_busting": 1.0,
+    "step_by_step": 1.0,
+    "mistake_warning": 1.0,
+    "worked_example": 1.0
+  }
+}
