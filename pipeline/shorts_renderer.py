@@ -31,6 +31,8 @@ WPS = 2.5               # words per second at voiceover pace
 MAX_VISUAL_GAP_S = 2.0  # max seconds of blank screen before injecting a cadence label
 MAX_LINE_CHARS = 20     # fallback char-wrap width (word-boundary fallback only)
 TARGET_LOUDNESS = -16.0
+BG_FRAME_FPS = 6.0      # background frame extraction rate (higher = smoother motion)
+BG_CADENCE_S = 0.5      # background refresh cadence for segment generation
 
 BACKGROUNDS = [
     [(15, 15, 25), (30, 30, 60)],    # deep navy  (investing)
@@ -188,13 +190,18 @@ def _make_background_image(pillar: str = "investing"):
     colors = palette_map.get(pillar, BACKGROUNDS[0])
     bg = _make_gradient_background(colors[0], colors[1]).convert("RGBA")
     draw = ImageDraw.Draw(bg)
-    font = _get_font(36)
-    draw.text(
-        (SHORT_W // 2 - 80, int(SHORT_H * 0.05)),
-        "ClearWealth",
-        font=font,
-        fill=(255, 255, 255, 60),
+    font = _get_font(44)
+    wm_text = "ClearWealth"
+    wm_w = _text_width(draw, wm_text, font)
+    wm_x = (SHORT_W - wm_w) // 2
+    wm_y = int(SHORT_H * 0.05)
+    # Dark backing rect improves legibility on any background
+    pad = 8
+    draw.rounded_rectangle(
+        [(wm_x - pad, wm_y - pad // 2), (wm_x + wm_w + pad, wm_y + 44 + pad // 2)],
+        radius=8, fill=(0, 0, 0, 80),
     )
+    draw.text((wm_x, wm_y), wm_text, font=font, fill=(255, 255, 255, 140))
     return bg
 
 
@@ -276,8 +283,8 @@ def _prepare_bg_video(raw_clip: Path, work_dir: Path, duration: float) -> Path:
     vf = (
         f"scale={SHORT_W}:{SHORT_H}:force_original_aspect_ratio=increase,"
         f"crop={SHORT_W}:{SHORT_H},"
-        "eq=brightness=-0.40:saturation=0.75,"
-        "boxblur=4:4"
+        "eq=brightness=-0.25:saturation=0.80,"
+        "boxblur=2:2"
     )
     cmd = [
         _bin("ffmpeg"), "-y",
@@ -296,10 +303,10 @@ def _prepare_bg_video(raw_clip: Path, work_dir: Path, duration: float) -> Path:
     return out
 
 
-def _extract_bg_frames(video_path: Path, work_dir: Path, fps: float = 2.0) -> list[tuple[float, Path]]:
+def _extract_bg_frames(video_path: Path, work_dir: Path, fps: float = BG_FRAME_FPS) -> list[tuple[float, Path]]:
     """
     Extract frames at `fps` from video. Returns list of (timestamp, frame_path) sorted by time.
-    At 2fps a 40s video yields ~80 frames — enough for smooth-looking background motion.
+    At 6fps a 40s video yields ~240 frames — noticeably smoother background motion.
     """
     frame_dir = work_dir / "bg_frames"
     frame_dir.mkdir(exist_ok=True)
@@ -440,6 +447,9 @@ def _make_overlay_image(overlay: dict, w: int = SHORT_W, h: int = SHORT_H):
 # ---------------------------------------------------------------------------
 
 def _ov_start(ov: dict) -> float:
+    """Return overlay start time. Uses ElevenLabs word timestamp when available."""
+    if "start_time_s" in ov:
+        return float(ov["start_time_s"])
     return round(int(ov.get("start_word", 0)) / WPS, 2)
 
 
@@ -447,7 +457,9 @@ def _ov_end(ov: dict) -> float:
     return round(_ov_start(ov) + float(ov.get("duration_s", 3.0)), 2)
 
 
-def _sanitize_overlays(overlays: list, duration_s: float) -> list[dict]:
+def _sanitize_overlays(
+    overlays: list, duration_s: float, word_timestamps: list[float] | None = None
+) -> list[dict]:
     safe = []
     for ov in overlays:
         kind = str((ov or {}).get("type", "")).strip()
@@ -461,11 +473,17 @@ def _sanitize_overlays(overlays: list, duration_s: float) -> list[dict]:
             dur = max(1.2, min(float((ov or {}).get("duration_s", 3.0)), 5.0))
         except (TypeError, ValueError):
             dur = 3.0
-        if start_word / WPS >= duration_s:
+        # Compute start time: use real word timestamp when available, else WPS constant
+        if word_timestamps and start_word < len(word_timestamps):
+            start_time_s = float(word_timestamps[start_word])
+        else:
+            start_time_s = start_word / WPS
+        if start_time_s >= duration_s:
             continue
         cleaned = dict(ov)
         cleaned["type"] = kind
         cleaned["start_word"] = start_word
+        cleaned["start_time_s"] = round(start_time_s, 3)
         cleaned["duration_s"] = dur
         safe.append(cleaned)
     safe.sort(key=lambda item: item["start_word"])
@@ -611,20 +629,24 @@ def render(
             raw_clip = _fetch_pexels_clip(pillar, work_dir)
             if raw_clip:
                 processed = _prepare_bg_video(raw_clip, work_dir, vo_duration)
-                bg_frames = _extract_bg_frames(processed, work_dir, fps=2.0)
+                bg_frames = _extract_bg_frames(processed, work_dir, fps=BG_FRAME_FPS)
                 logger.info("Background video ready: %d frames", len(bg_frames))
         except Exception as exc:
             logger.warning("Background video unavailable, using gradient: %s", exc)
 
+    word_timestamps: list[float] = script_data.get("word_timestamps") or []
+    if word_timestamps:
+        logger.info("Using ElevenLabs word timestamps (%d words)", len(word_timestamps))
+
     # Step 1: clean overlays from script
-    overlays = _sanitize_overlays(script_data.get("overlays", []), vo_duration)
+    overlays = _sanitize_overlays(script_data.get("overlays", []), vo_duration, word_timestamps)
 
     # Step 2: inject cadence labels into actual visual gaps
     overlays = _inject_cadence_labels(overlays, vo_duration)
     overlays = _sanitize_overlays(overlays, vo_duration)  # re-sort + re-clamp after injection
     logger.info("Total overlays after cadence injection: %d", len(overlays))
 
-    # Step 3: segment boundaries from overlay start/end times
+    # Step 3: segment boundaries from overlay start/end times + background cadence
     from PIL import Image
     events: set[float] = {0.0, vo_duration}
     for ov in overlays:
@@ -633,6 +655,10 @@ def render(
             events.add(s)
         if 0 < e < vo_duration:
             events.add(e)
+    t = BG_CADENCE_S
+    while t < vo_duration:
+        events.add(round(t, 2))
+        t += BG_CADENCE_S
     events_sorted = sorted(events)
 
     # Step 4: composite each segment frame with Pillow
@@ -689,7 +715,7 @@ def render(
         "-map", "0:v",
         "-map", "[a]",
         "-vf", f"scale={SHORT_W}:{SHORT_H}:force_original_aspect_ratio=disable,fps=30,setsar=1",
-        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+        "-c:v", "libx264", "-preset", "fast", "-crf", "19",
         "-pix_fmt", "yuv420p",
         "-profile:v", "high",
         "-g", "60",

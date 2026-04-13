@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from pipeline.shorts_scriptwriter import FINANCE_TOPICS, generate as generate_script
 from pipeline.shorts_renderer import OUTPUT_SHORT, render as render_short
-from pipeline.voiceover import generate as generate_voiceover
+from pipeline.voiceover import generate_with_timestamps
 
 logging.basicConfig(
     level=logging.INFO,
@@ -100,10 +100,14 @@ def main() -> None:
                 len(script_data.get("voiceover_script", "").split()),
                 len(script_data.get("overlays", [])))
 
-    # ── 3. Generate voiceover ────────────────────────────────────────────────
+    # ── 3. Generate voiceover (with timestamps when available) ───────────────
     logger.info("Generating voiceover...")
-    generate_voiceover(script_data["voiceover_script"], output_path=SHORT_VO_PATH)
-    logger.info("Voiceover saved: %s", SHORT_VO_PATH)
+    vo_path, word_times = generate_with_timestamps(
+        script_data["voiceover_script"],
+        output_path=SHORT_VO_PATH,
+    )
+    script_data["word_timestamps"] = word_times
+    logger.info("Voiceover saved: %s", vo_path)
 
     # ── 4. Render Short ──────────────────────────────────────────────────────
     logger.info("Rendering Short video...")

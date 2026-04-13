@@ -112,48 +112,97 @@ def _ffprobe_validate(path: Path) -> dict | None:
 # not the topic keyword. Pexels searches visual scenes, not concepts.
 PILLAR_VISUAL_QUERIES = {
     "budgeting": [
-        "person looking at bills on laptop",
-        "grocery shopping cart supermarket",
-        "person writing in notebook at desk",
-        "smartphone banking app hands",
-        "jar of coins savings",
+        "counting cash money hands closeup",
+        "person frustrated looking at bills",
+        "grocery store checkout shopping",
+        "phone banking transfer notification",
+        "piggy bank coins saving money",
+        "budget spreadsheet laptop stressed",
+        "wallet empty no money",
     ],
     "debt": [
-        "person stressed looking at credit card bills",
-        "scissors cutting credit card",
-        "person paying with credit card store",
-        "calculator pen financial documents desk",
-        "person relieved happy at computer",
+        "credit card debt stress anxiety",
+        "person tearing up credit card",
+        "debt free celebration happy person",
+        "loan documents signing bank",
+        "person paying bills relief",
+        "envelope bills mailbox overdue",
+        "financial freedom person arms raised",
     ],
     "investing": [
-        "person using smartphone stock app",
-        "graphs rising chart screen closeup",
-        "young professional laptop coffee shop",
-        "hands typing on laptop finance",
-        "city skyline buildings business",
+        "stock market chart green rising",
+        "young woman smiling phone investment",
+        "compound interest growth visualization",
+        "brokerage account mobile phone hands",
+        "retirement savings nest egg",
+        "real estate property investment",
+        "downtown city financial district aerial",
     ],
     "tax": [
-        "person filling out tax forms paperwork",
-        "calculator documents desk pen",
-        "person on laptop tax filing",
-        "folders documents organized office",
-        "person looking at pay stub salary",
+        "tax refund check money excited",
+        "person doing taxes frustrated paperwork",
+        "IRS tax return filing laptop",
+        "paycheck stub income earnings",
+        "tax savings receipt documents",
+        "accountant reviewing documents office",
+        "money back tax return happy",
     ],
     "career_income": [
-        "job interview handshake office",
-        "business meeting professional team",
-        "person celebrating success office",
-        "salary negotiation two people talking",
-        "young professional working laptop office",
+        "job offer letter excited person",
+        "salary raise negotiation handshake",
+        "promotion celebration office coworkers",
+        "resume job application laptop",
+        "side hustle freelance working home",
+        "paycheck direct deposit notification phone",
+        "confident professional presentation meeting",
     ],
 }
 
-# Generic fallback queries — always cinematic and visually engaging
+# Job-specific B-roll — matched to common case study personas
+JOB_VISUAL_QUERIES = {
+    "nurse": ["nurse hospital scrubs corridor", "medical professional caring patient"],
+    "teacher": ["teacher classroom students whiteboard", "school hallway education"],
+    "software engineer": ["developer coding dual monitors dark", "tech office modern open space"],
+    "engineer": ["engineer blueprint technical drawing", "construction site hard hat"],
+    "marketing manager": ["marketing team brainstorm office", "social media analytics laptop"],
+    "accountant": ["accountant reviewing financial statements", "office desk numbers spreadsheet"],
+    "graphic designer": ["graphic designer creative studio tablet", "designer color palette screen"],
+    "project manager": ["project manager whiteboard planning", "team meeting agile scrum"],
+    "sales": ["sales person phone call smiling office", "deal closed handshake business"],
+    "real estate": ["real estate agent showing house", "house keys new home excited"],
+    "doctor": ["doctor hospital white coat stethoscope", "medical office professional"],
+    "lawyer": ["lawyer law office books professional", "courtroom legal professional"],
+    "dentist": ["dentist office professional medical", "healthcare worker clinic"],
+}
+
+# Generic fallback queries — cinematic, motion-rich, emotionally resonant
 GENERIC_VISUAL_QUERIES = [
-    "person walking city urban lifestyle",
-    "coffee shop working morning",
-    "sunrise cityscape motivation",
+    "young professional city morning commute",
+    "person opening laptop at window sunrise",
+    "hands counting dollar bills closeup",
+    "person smiling looking at phone good news",
+    "aerial city skyline sunset timelapse",
+    "coffee shop laptop focused working",
 ]
+
+
+def _job_queries(job_title: str) -> list[str]:
+    """Return 2 job-specific visual queries for the case study persona."""
+    if not job_title:
+        return []
+    job_lower = job_title.lower()
+    for key, queries in JOB_VISUAL_QUERIES.items():
+        if key in job_lower:
+            return queries
+    # Generic professional fallback
+    return [f"{job_title} professional working office", f"young {job_title} smiling success"]
+
+
+def _clear_old_clips() -> None:
+    """Remove previous run clip files so deterministic names never overwrite silently."""
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    for old in OUTPUT_DIR.glob("clip_*.mp4"):
+        old.unlink(missing_ok=True)
 
 
 def download(topic: dict, target_count: int = TARGET_CLIP_COUNT, script_data: dict | None = None) -> list[Path]:
@@ -188,6 +237,13 @@ def download(topic: dict, target_count: int = TARGET_CLIP_COUNT, script_data: di
             elif any(w in hook_lower for w in ["salary", "raise", "income", "earn"]):
                 queries.append("professional salary negotiation office")
 
+        # Add job/persona-specific visuals if case study metadata is available.
+        case_study = script_data.get("case_study", {})
+        if isinstance(case_study, dict):
+            job_title = str(case_study.get("job", "")).strip()
+            if job_title:
+                queries.extend(_job_queries(job_title))
+
     # Add pillar-specific visual queries
     pillar_visuals = PILLAR_VISUAL_QUERIES.get(pillar, [])
     queries.extend(pillar_visuals)
@@ -195,7 +251,10 @@ def download(topic: dict, target_count: int = TARGET_CLIP_COUNT, script_data: di
     # Add generic fallbacks
     queries.extend(GENERIC_VISUAL_QUERIES)
 
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    # Keep clip naming deterministic by clearing stale clips from prior runs.
+    _clear_old_clips()
+    # Preserve query ordering but drop duplicates.
+    queries = list(dict.fromkeys(queries))
     valid_clips: list[Path] = []
     seen_ids: set[int] = set()
 
