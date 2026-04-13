@@ -13,6 +13,7 @@ Saves to data/video_performance.json under metrics_24h / metrics_48h.
 """
 import json
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -32,7 +33,9 @@ ANALYTICS_METRICS = ",".join(
         "impressions",
         "impressionClickThroughRate",
         "averageViewDuration",
-        "averageViewPercentage",
+        "averageViewPercentage",   # completion rate proxy — weighted heavily for Shorts
+        "subscribersGained",       # follow conversion signal
+        "subscribersLost",
     ]
 )
 
@@ -84,16 +87,22 @@ def _fetch_metrics(yta, video_id: str, start_date: str, end_date: str) -> dict:
     return dict(zip(col_headers, row))
 
 
+ARCHIVE_AFTER_DAYS = int(os.environ.get("ANALYTICS_ARCHIVE_DAYS", "30"))
+
+
 def fetch_recent(days_back: int = 2) -> None:
     """
     Fetch metrics for all videos uploaded within the last `days_back` days.
     Stores 24h and 48h snapshots based on hours since upload.
+    Videos older than ARCHIVE_AFTER_DAYS are skipped to avoid wasting quota.
     """
     perf = _load_performance()
     yta = _youtube_analytics()
     now = datetime.now(timezone.utc)
 
     updated = False
+    skipped_archive = 0
+    skipped_days_back = 0
     for entry in perf.get("videos", []):
         video_id = entry.get("video_id")
         if not video_id or video_id == "dry-run":
@@ -106,9 +115,19 @@ def fetch_recent(days_back: int = 2) -> None:
         upload_time = datetime.fromisoformat(upload_time_str.replace("Z", "+00:00"))
         hours_since = (now - upload_time).total_seconds() / 3600
 
+        # Respect requested scan window first (used by scheduler cadence and manual runs).
+        if days_back > 0 and hours_since > days_back * 24:
+            skipped_days_back += 1
+            continue
+
+        # Skip videos beyond the archive window — no point querying forever.
+        if hours_since > ARCHIVE_AFTER_DAYS * 24:
+            skipped_archive += 1
+            continue
+
         upload_date = upload_time.strftime("%Y-%m-%d")
 
-        # 24h window
+        # 24h window — retry if empty (uploader seeds {} as placeholder).
         if hours_since >= 24 and not entry.get("metrics_24h"):
             day1_end = (upload_time + timedelta(days=1)).strftime("%Y-%m-%d")
             try:
@@ -117,8 +136,10 @@ def fetch_recent(days_back: int = 2) -> None:
                     entry["metrics_24h"] = m
                     updated = True
                     logger.info("Fetched 24h metrics for %s", video_id)
+                else:
+                    logger.info("24h metrics not yet available for %s (YouTube lag)", video_id)
             except Exception as exc:
-                logger.warning("24h fetch failed for %s: %s", video_id, exc)
+                logger.warning("24h fetch failed for %s: %s — will retry next run", video_id, exc)
 
         # 48h window
         if hours_since >= 48 and not entry.get("metrics_48h"):
@@ -129,8 +150,15 @@ def fetch_recent(days_back: int = 2) -> None:
                     entry["metrics_48h"] = m
                     updated = True
                     logger.info("Fetched 48h metrics for %s", video_id)
+                else:
+                    logger.info("48h metrics not yet available for %s (YouTube lag)", video_id)
             except Exception as exc:
-                logger.warning("48h fetch failed for %s: %s", video_id, exc)
+                logger.warning("48h fetch failed for %s: %s — will retry next run", video_id, exc)
+
+    if skipped_archive:
+        logger.info("Skipped %d archived videos (>%d days old)", skipped_archive, ARCHIVE_AFTER_DAYS)
+    if skipped_days_back:
+        logger.info("Skipped %d videos outside days_back=%d window", skipped_days_back, days_back)
 
     if updated:
         _save_performance(perf)

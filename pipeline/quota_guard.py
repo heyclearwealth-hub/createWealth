@@ -99,6 +99,11 @@ def charge(operation: str, units: int | None = None) -> None:
         data["daily_units_used"],
         DAILY_BUDGET,
     )
+    if data["daily_units_used"] > DAILY_BUDGET:
+        raise RuntimeError(
+            f"Daily API quota exceeded after charging '{operation}' "
+            f"(used={data['daily_units_used']}, budget={DAILY_BUDGET})"
+        )
 
 
 def assert_budget(operation: str) -> None:

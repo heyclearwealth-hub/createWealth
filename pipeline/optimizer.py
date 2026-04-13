@@ -58,6 +58,27 @@ def _save_weights(data: dict) -> None:
         json.dump(data, f, indent=2)
 
 
+def _read_pillar_weight(weights: dict, pillar: str) -> float:
+    """
+    Backward-compatible pillar weight reader.
+    Supports both:
+      {"pillars": {"investing": 1.0}}
+      {"pillars": {"investing": {"weight": 1.0}}}
+    """
+    raw = weights.get("pillars", {}).get(pillar, 1.0)
+    if isinstance(raw, dict):
+        return _to_float(raw.get("weight")) or 1.0
+    return _to_float(raw) or 1.0
+
+
+def _write_pillar_weight(weights: dict, pillar: str, value: float) -> None:
+    """
+    Normalize to flat numeric schema:
+      {"pillars": {"investing": 1.25}}
+    """
+    weights.setdefault("pillars", {})[pillar] = value
+
+
 def _to_float(value) -> float | None:
     if value is None:
         return None
@@ -151,7 +172,7 @@ def run() -> None:
     for pillar, scores in pillar_scores.items():
         avg_score = sum(scores) / len(scores)
         quality_ok = all(pillar_quality.get(pillar, [True]))
-        current = weights.get("pillars", {}).get(pillar, {}).get("weight", 1.0)
+        current = _read_pillar_weight(weights, pillar)
 
         if avg_score >= WTPI_FLOOR and quality_ok:
             new_weight = min(MAX_WEIGHT, current * SCALE_MULTIPLIER)
@@ -161,7 +182,7 @@ def run() -> None:
             action = "kill/cooldown"
 
         new_weight = round(new_weight, 3)
-        weights.setdefault("pillars", {}).setdefault(pillar, {})["weight"] = new_weight
+        _write_pillar_weight(weights, pillar, new_weight)
         logger.info(
             "Pillar '%s': avg_score=%.1fs, quality_ok=%s, weight %.3f → %.3f (%s)",
             pillar,

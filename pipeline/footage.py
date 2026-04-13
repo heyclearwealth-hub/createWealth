@@ -1,5 +1,11 @@
 """
 footage.py — Downloads stock footage from Pexels API with ffprobe validation.
+
+NOTE: This module is used for LONG-FORM video B-roll only.
+For YouTube Shorts, B-roll is NOT used — the Shorts renderer uses gradient
+backgrounds + text overlays, which load faster and look cleaner at 9:16.
+The Pexels queries here are intentionally visual/scene-based (not thematic)
+since Pexels searches what a viewer would see on screen, not concepts.
 """
 import json
 import logging
@@ -257,6 +263,7 @@ def download(topic: dict, target_count: int = TARGET_CLIP_COUNT, script_data: di
     queries = list(dict.fromkeys(queries))
     valid_clips: list[Path] = []
     seen_ids: set[int] = set()
+    clip_attempt_idx = 0  # tracks download attempts independently of validated count
 
     for query in queries:
         if len(valid_clips) >= target_count:
@@ -286,7 +293,9 @@ def download(topic: dict, target_count: int = TARGET_CLIP_COUNT, script_data: di
                 if not file_info:
                     continue
 
-                dest = OUTPUT_DIR / f"clip_{len(valid_clips):02d}.mp4"
+                # Use independent counter so failed/deleted downloads don't create name collisions.
+                dest = OUTPUT_DIR / f"clip_{clip_attempt_idx:02d}.mp4"
+                clip_attempt_idx += 1
                 if not _download_clip(file_info["link"], dest):
                     continue
 

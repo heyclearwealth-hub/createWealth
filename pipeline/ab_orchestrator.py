@@ -21,7 +21,16 @@ WORKSPACE_CANDIDATES_FILE = Path("workspace/package_candidates.json")
 SLA_HOURS = int(os.environ.get("NATIVE_AB_SLA_HOURS", "24"))
 MODE = os.environ.get("PACKAGING_EXPERIMENT_MODE", "native_preferred")
 IMPRESSION_MIN = int(os.environ.get("IMPRESSION_MIN_FOR_EXPERIMENT", "1000"))
-CTR_FLOOR = float(os.environ.get("CTR_FLOOR", "0.045"))
+CTR_FLOOR = float(os.environ.get("CTR_FLOOR", "0.045"))  # absolute fallback only
+# A video must be this far *below* channel average before we rotate (0.85 = 15% below avg).
+CTR_RELATIVE_THRESHOLD = float(os.environ.get("CTR_RELATIVE_THRESHOLD", "0.85"))
+# Early-rotation gate: Shorts get 70% of algorithmic push in first 2h.
+# If a title gets enough impressions fast but CTR is weak, rotate before SLA expires.
+EARLY_ROTATION_HOURS = float(os.environ.get("EARLY_ROTATION_HOURS", "2.0"))
+EARLY_IMPRESSION_MIN = int(os.environ.get("EARLY_IMPRESSION_MIN", "500"))
+EARLY_CTR_THRESHOLD = float(os.environ.get("EARLY_CTR_THRESHOLD", "0.04"))
+# Completion rate threshold — rotate if Shorts completion is below this (Shorts-specific signal).
+COMPLETION_MIN_PERCENT = float(os.environ.get("COMPLETION_MIN_PERCENT", "25.0"))
 
 
 def _youtube_service():
@@ -116,7 +125,28 @@ def check_and_rotate(video_id: str) -> None:
         logger.info("Native A/B test active for %s — no API rotation needed", video_id)
         return
 
-    if hours_since_upload < SLA_HOURS:
+    metrics = video_entry.get("metrics_48h") or video_entry.get("metrics_24h") or {}
+    impressions = _safe_float(metrics.get("impressions"), 0.0)
+    ctr = _safe_float(metrics.get("impressionClickThroughRate"), 0.0)
+    # Use None sentinel so we can distinguish "API returned 0%" (low completion) from
+    # "field not present yet" (no data). _safe_float with default=None preserves the None.
+    _raw_completion = metrics.get("averageViewPercentage")
+    completion_pct: float | None = None if _raw_completion is None else _safe_float(_raw_completion, 0.0)
+
+    # Early-rotation gate: Shorts get 70% of algorithmic push in the first 2h.
+    # If we have enough signal and CTR is already weak, don't wait for the full SLA.
+    if (
+        hours_since_upload <= EARLY_ROTATION_HOURS
+        and impressions >= EARLY_IMPRESSION_MIN
+        and ctr < EARLY_CTR_THRESHOLD
+    ):
+        logger.info(
+            "Early rotation triggered for %s: %.1fh old, %d impressions, CTR=%.4f < %.4f threshold",
+            video_id, hours_since_upload, int(impressions), ctr, EARLY_CTR_THRESHOLD,
+        )
+        # Fall through to rotation logic below.
+
+    elif hours_since_upload < SLA_HOURS:
         logger.info(
             "Within SLA (%.1fh / %dh) for %s — waiting for native test",
             hours_since_upload,
@@ -124,10 +154,6 @@ def check_and_rotate(video_id: str) -> None:
             video_id,
         )
         return
-
-    metrics = video_entry.get("metrics_48h") or video_entry.get("metrics_24h") or {}
-    impressions = _safe_float(metrics.get("impressions"), 0.0)
-    ctr = _safe_float(metrics.get("impressionClickThroughRate"), 0.0)
 
     if impressions > 0 and impressions < IMPRESSION_MIN:
         logger.info(
@@ -138,16 +164,58 @@ def check_and_rotate(video_id: str) -> None:
         )
         return
 
-    if impressions >= IMPRESSION_MIN and ctr >= CTR_FLOOR:
-        logger.info(
-            "CTR already healthy for %s (%.4f >= %.4f) — no rotation",
-            video_id,
-            ctr,
-            CTR_FLOOR,
-        )
-        return
+    if impressions >= IMPRESSION_MIN:
+        # Compute channel-average CTR from all other videos that have enough impressions.
+        channel_ctrs = [
+            _safe_float(
+                (v.get("metrics_48h") or v.get("metrics_24h") or {}).get("impressionClickThroughRate"),
+                0.0,
+            )
+            for v in perf.get("videos", [])
+            if v.get("video_id") != video_id
+            and _safe_float(
+                (v.get("metrics_48h") or v.get("metrics_24h") or {}).get("impressions"), 0.0
+            ) >= IMPRESSION_MIN
+        ]
+        if channel_ctrs:
+            channel_avg_ctr = sum(channel_ctrs) / len(channel_ctrs)
+            healthy_threshold = channel_avg_ctr * CTR_RELATIVE_THRESHOLD
+        else:
+            # No channel history yet — fall back to absolute floor.
+            healthy_threshold = CTR_FLOOR
+            logger.info(
+                "No healthy channel history available — using absolute CTR_FLOOR=%.3f for %s",
+                CTR_FLOOR, video_id,
+            )
 
-    # SLA exceeded, no native test — rotate to next variant
+        ctr_healthy = ctr >= healthy_threshold
+
+        # Completion rate check (Shorts-specific signal — weighted more than CTR by the algorithm).
+        # completion_pct=None  → API hasn't populated the field yet, skip check.
+        # completion_pct=0.0   → API returned zero, which is real data (very poor completion).
+        completion_healthy = True
+        if completion_pct is not None:
+            completion_healthy = completion_pct >= COMPLETION_MIN_PERCENT
+            if not completion_healthy:
+                logger.info(
+                    "Completion rate low for %s (%.1f%% < %.1f%% min) — rotation warranted",
+                    video_id, completion_pct, COMPLETION_MIN_PERCENT,
+                )
+
+        if ctr_healthy and completion_healthy:
+            completion_str = f"{completion_pct:.1f}%" if completion_pct is not None else "n/a"
+            logger.info(
+                "Performance healthy for %s (CTR=%.4f >= %.4f, completion=%s) — no rotation",
+                video_id, ctr, healthy_threshold, completion_str,
+            )
+            return
+        if not ctr_healthy:
+            logger.info(
+                "CTR underperforming for %s (%.4f < %.4f threshold) — rotating",
+                video_id, ctr, healthy_threshold,
+            )
+
+    # SLA exceeded (or early gate triggered), no native test — rotate to next variant
     next_variant = (current_variant + 1) % len(titles)
     next_title = titles[next_variant]
 

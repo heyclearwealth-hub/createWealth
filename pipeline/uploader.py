@@ -94,6 +94,31 @@ def _normalize_candidates(raw: dict, fallback_title: str) -> tuple[dict, list[st
     return normalized, cleaned_titles, default_idx
 
 
+def _sanitize_tags(raw_tags: list) -> list[str]:
+    """
+    Enforce YouTube tag limits: each tag ≤30 chars, total ≤15 tags, no duplicates.
+    Strips '#' prefix so tags go in the tags field (not description hashtag format).
+    Logs a warning if any tag was truncated or dropped.
+    """
+    seen: set[str] = set()
+    cleaned: list[str] = []
+    for raw in (raw_tags or []):
+        tag = str(raw or "").strip().lstrip("#")
+        if not tag:
+            continue
+        if len(tag) > 30:
+            logger.warning("Tag truncated to 30 chars: '%s' → '%s'", tag, tag[:30])
+            tag = tag[:30]
+        if tag.lower() in seen:
+            continue
+        seen.add(tag.lower())
+        cleaned.append(tag)
+        if len(cleaned) >= 15:
+            logger.warning("Tag list capped at 15 (dropped %d)", len(raw_tags) - 15)
+            break
+    return cleaned
+
+
 def _normalize_content_type(raw: str) -> str:
     value = (raw or "").strip().lower()
     if value in {"short", "long"}:
@@ -118,12 +143,36 @@ def upload(pipeline_json: dict, video_path: Path = OUTPUT_PATH) -> str:
     description_hook = candidates.get("description_hook", "")
     description = str(pipeline_json.get("description", ""))
     full_description = ((description_hook + "\n\n") if description_hook else "") + description + AI_DISCLOSURE_FOOTER
-    tags = pipeline_json.get("tags", [])
+    # Warn if title and description hook are near-identical (wastes hook's click-through value).
+    if description_hook and title:
+        title_lower = title.lower().strip()
+        hook_lower = description_hook.lower().strip()
+        # Simple overlap check: if one is a substring of the other, they're redundant.
+        if title_lower in hook_lower or hook_lower in title_lower or title_lower == hook_lower:
+            logger.warning(
+                "Title and description hook are near-identical — consider a distinct hook "
+                "to improve description CTR (title='%s', hook='%s')",
+                title[:60], description_hook[:60],
+            )
+
+    if len(full_description) > 4800:
+        # YouTube limit is 5000 chars; leave headroom for safety.
+        logger.warning("Description truncated from %d to 4800 chars", len(full_description))
+        full_description = full_description[:4797] + "..."
+    tags = _sanitize_tags(pipeline_json.get("tags", []))
     pillar = pipeline_json.get("pillar", "")
-    video_privacy = os.environ.get("VIDEO_PRIVACY_STATUS", "public")
+    video_privacy = os.environ.get("VIDEO_PRIVACY_STATUS") or "unlisted"
+    if not os.environ.get("VIDEO_PRIVACY_STATUS"):
+        logger.warning("VIDEO_PRIVACY_STATUS not set — defaulting to 'unlisted'. Set to 'public' when ready.")
 
     series_map = _load_series_map()
     playlist_id = series_map.get(pillar, {}).get("playlist_id", "")
+    if not playlist_id:
+        logger.warning(
+            "Pillar '%s' not found in series_map — video will not be added to any playlist. "
+            "Add it to data/series_map.json to enable playlist membership.",
+            pillar,
+        )
 
     payload = {
         "title": title,
@@ -136,6 +185,10 @@ def upload(pipeline_json: dict, video_path: Path = OUTPUT_PATH) -> str:
     }
 
     if DRY_RUN:
+        if not video_path.exists():
+            raise FileNotFoundError(
+                f"DRY_RUN: video file not found at {video_path} — render must complete before upload."
+            )
         dry_path = Path("workspace/output/upload_payload.json")
         dry_path.parent.mkdir(parents=True, exist_ok=True)
         with dry_path.open("w") as f:
@@ -198,7 +251,7 @@ def upload(pipeline_json: dict, video_path: Path = OUTPUT_PATH) -> str:
             quota_guard.charge("playlistItems.insert")
             logger.info("Added to playlist %s", playlist_id)
         except Exception as exc:
-            logger.warning("Playlist add failed (non-fatal): %s", exc)
+            logger.error("Playlist add failed for video %s (playlist %s): %s", video_id, playlist_id, exc)
 
     _record_upload(video_id, pipeline_json, title, candidates, default_idx)
     return video_id

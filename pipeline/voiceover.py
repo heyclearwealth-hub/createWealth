@@ -20,9 +20,9 @@ ALIGNMENT_PATH = Path("workspace/voiceover_alignment.json")
 TTS_SETTINGS = {
     "model_id": "eleven_turbo_v2_5",
     "voice_settings": {
-        "stability": 0.50,
-        "similarity_boost": 0.75,
-        "style": 0.20,
+        "stability": 0.42,
+        "similarity_boost": 0.82,
+        "style": 0.12,
         "use_speaker_boost": True,
     },
     "output_format": "mp3_44100_128",
@@ -52,16 +52,29 @@ def _extract_word_start_times(alignment: dict, text: str) -> list[float]:
 
     word_start_times: list[float] = []
     prev_is_word = False
-    for ch, t in zip(chars, starts):
-        is_word = bool(re.match(r"[A-Za-z0-9$%]", ch))
+    for idx, (ch, t) in enumerate(zip(chars, starts)):
+        next_ch = chars[idx + 1] if idx + 1 < len(chars) else ""
+        # Keep apostrophes inside words so contractions ("don't", "you're")
+        # map to one spoken token instead of splitting into 2 tokens.
+        is_apostrophe_connector = (
+            ch == "'"
+            and prev_is_word
+            and bool(re.match(r"[A-Za-z0-9$%]", next_ch))
+        )
+        is_word = bool(re.match(r"[A-Za-z0-9$%]", ch)) or is_apostrophe_connector
         if is_word and not prev_is_word:
             word_start_times.append(float(t))
         prev_is_word = is_word
 
-    # If we somehow got fewer word starts than actual words, fall back to regex count.
-    expected_words = len(re.findall(r"[A-Za-z0-9$%]+", text))
+    # If we got fewer word starts than actual words, the alignment is incomplete.
+    # Return [] so callers get a hard fail (missing captions) rather than drifted captions.
+    expected_words = len(re.findall(r"[A-Za-z0-9$%']+", text))
     if len(word_start_times) < expected_words:
-        return word_start_times
+        logger.warning(
+            "Timestamp count mismatch: got %d, expected %d — discarding partial alignment",
+            len(word_start_times), expected_words,
+        )
+        return []
     return word_start_times[:expected_words]
 
 
@@ -170,6 +183,11 @@ def generate_with_timestamps(
         logger.info("Voiceover+timestamps saved (%d words)", len(word_times))
         return output_path, word_times
     except Exception as exc:
-        logger.warning("Timestamps failed (%s) — falling back to basic TTS", exc)
+        logger.error(
+            "Timestamps failed (%s) — falling back to basic TTS. "
+            "Word-synced captions will NOT be available for this render. "
+            "Check ELEVENLABS_API_KEY and network connectivity.",
+            exc,
+        )
         path = generate(script, output_path=output_path, voice_id=voice_id)
         return path, []

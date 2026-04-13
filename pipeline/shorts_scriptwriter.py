@@ -14,6 +14,7 @@ import logging
 import os
 import random
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 
 import anthropic
@@ -44,8 +45,22 @@ HOOK_CONSEQUENCE_TERMS = {
 TITLE_POWER_TERMS = {
     "why", "how", "mistake", "truth", "secret", "stop", "before", "after", "lose", "save",
 }
+# Finance-specific high-CTR terms — outperform generic "secret/truth" for money content
+TITLE_POWER_TERMS_FINANCE = {
+    "mistake", "waste", "lose", "trap", "avoid", "save", "free", "rich", "compound",
+    "tax", "debt", "retire", "income", "earn", "invest", "raise", "salary",
+}
 
 OVERLAY_TYPES = {"hook_number", "label", "comparison", "cta"}
+
+# Pillar-specific CTA copy — specific CTAs convert better than generic "money tips"
+PILLAR_CTA_TEXT = {
+    "investing": "Follow for investing wins",
+    "budgeting": "Follow for money-saving tips",
+    "debt": "Follow for debt freedom steps",
+    "tax": "Follow for tax hacks",
+    "career_income": "Follow for income growth tips",
+}
 DEFAULT_DURATIONS = {
     "hook_number": 4.0,
     "label": 2.2,
@@ -84,20 +99,89 @@ def _load_last_shorts() -> list[dict]:
     return [r if isinstance(r, dict) else {"topic": "", "script": r} for r in raw]
 
 
+TOPIC_COOLDOWN_DAYS = int(os.environ.get("TOPIC_COOLDOWN_DAYS", "7"))
+
+
 def _save_short_to_memory(topic_name: str, script_text: str) -> None:
-    entries = _load_last_shorts()
-    entries.append({"topic": topic_name, "script": script_text})
-    if len(entries) > MAX_SHORTS_MEMORY:
-        entries = entries[-MAX_SHORTS_MEMORY:]
+    """
+    Atomic read-modify-write using an advisory lock file to prevent two concurrent
+    batch processes from picking the same topic before either has written to disk.
+    Falls back to a plain write on platforms that don't support fcntl.
+    """
+    import tempfile
+
     LAST_SHORTS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with LAST_SHORTS_FILE.open("w") as f:
-        json.dump(entries, f)
+    lock_path = LAST_SHORTS_FILE.with_suffix(".lock")
+
+    try:
+        import fcntl
+        with lock_path.open("w") as lock_fh:
+            fcntl.flock(lock_fh, fcntl.LOCK_EX)
+            try:
+                entries = _load_last_shorts()
+                entries.append({
+                    "topic": topic_name,
+                    "script": script_text,
+                    "saved_at": datetime.now(timezone.utc).isoformat(),
+                })
+                if len(entries) > MAX_SHORTS_MEMORY:
+                    entries = entries[-MAX_SHORTS_MEMORY:]
+                # Write to a temp file then rename for atomicity.
+                fd, tmp_path = tempfile.mkstemp(dir=LAST_SHORTS_FILE.parent, suffix=".tmp")
+                try:
+                    with os.fdopen(fd, "w") as fh:
+                        json.dump(entries, fh)
+                    os.replace(tmp_path, LAST_SHORTS_FILE)
+                except Exception:
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
+                    raise
+            finally:
+                fcntl.flock(lock_fh, fcntl.LOCK_UN)
+    except ImportError:
+        # Windows or restricted environment — plain write without locking.
+        entries = _load_last_shorts()
+        entries.append({
+            "topic": topic_name,
+            "script": script_text,
+            "saved_at": datetime.now(timezone.utc).isoformat(),
+        })
+        if len(entries) > MAX_SHORTS_MEMORY:
+            entries = entries[-MAX_SHORTS_MEMORY:]
+        with LAST_SHORTS_FILE.open("w") as f:
+            json.dump(entries, f)
 
 
 def _pick_topic(used_topics: list[str] | None = None) -> dict:
-    """Pick a topic not recently used, chosen randomly among available candidates."""
-    used = set(used_topics or [])
+    """
+    Pick a topic not recently used.
+    Topics generated within TOPIC_COOLDOWN_DAYS are excluded first; if that
+    leaves no candidates, the hard-exclude list (used_topics) is tried; if still
+    empty, all topics are eligible (full reset).
+    """
+    now = datetime.now(timezone.utc)
+    # Build a set of topics used within the cooldown window from persisted memory.
+    recent_entries = _load_last_shorts()
+    cooling_down: set[str] = set()
+    for entry in recent_entries:
+        saved_at_str = entry.get("saved_at", "")
+        if not saved_at_str:
+            continue
+        try:
+            saved_at = datetime.fromisoformat(saved_at_str.replace("Z", "+00:00"))
+            days_ago = (now - saved_at).total_seconds() / 86400
+            if days_ago < TOPIC_COOLDOWN_DAYS:
+                cooling_down.add(entry.get("topic", ""))
+        except ValueError:
+            pass
+
+    used = set(used_topics or []) | cooling_down
     available = [t for t in FINANCE_TOPICS if t["topic"] not in used]
+    if not available:
+        # Cooldown blocked everything — fall back to hard-exclude only
+        available = [t for t in FINANCE_TOPICS if t["topic"] not in set(used_topics or [])]
     if not available:
         available = FINANCE_TOPICS  # all topics used — reset cycle
     return random.choice(available)
@@ -139,7 +223,7 @@ def _clean_script_text(script: str) -> str:
 
 
 def _word_count(script: str) -> int:
-    return len(re.findall(r"[A-Za-z0-9$%]+", _clean_script_text(script)))
+    return len(re.findall(r"[A-Za-z0-9$%']+", _clean_script_text(script)))
 
 
 def _first_token(script: str) -> str:
@@ -186,6 +270,36 @@ def _default_stat_citations(topic: dict) -> list[str]:
     return [defaults.get(pillar, "Federal Reserve Economic Data")]
 
 
+# Pillar → keywords that should appear in citations for that pillar.
+# If a citation contains none of these, it's likely from the wrong pillar.
+_PILLAR_CITATION_KEYWORDS = {
+    "investing": {"spiva", "vanguard", "s&p", "index", "morningstar", "etf", "fund", "return", "401k", "roth"},
+    "budgeting": {"fed", "federal reserve", "shed", "consumer", "budget", "savings", "income", "spending"},
+    "debt": {"federal reserve", "g.19", "credit", "debt", "loan", "card", "interest", "balance"},
+    "tax": {"irs", "pub", "publication", "tax", "fica", "bracket", "deduction", "w-2"},
+    "career_income": {"bls", "employment", "wage", "salary", "labor", "cost index", "income"},
+}
+
+
+def _validate_citations(citations: list[str], pillar: str) -> list[str]:
+    """
+    Warn if any citation looks mismatched for the pillar. Returns citations unchanged
+    (warn-only — never block generation over a citation mismatch).
+    """
+    keywords = _PILLAR_CITATION_KEYWORDS.get(pillar, set())
+    if not keywords:
+        return citations
+    for cite in citations:
+        lower = cite.lower()
+        if not any(kw in lower for kw in keywords):
+            logger.warning(
+                "Citation may be off-pillar (pillar='%s'): '%s' — "
+                "ensure it matches the script's claims",
+                pillar, cite,
+            )
+    return citations
+
+
 def _normalize_stat_citations(raw, topic: dict) -> list[str]:
     out: list[str] = []
     for item in (raw or []):
@@ -194,7 +308,8 @@ def _normalize_stat_citations(raw, topic: dict) -> list[str]:
             out.append(text)
     if not out:
         out = _default_stat_citations(topic)
-    return out[:2]
+    pillar = str(topic.get("pillar", "")).strip()
+    return _validate_citations(out[:2], pillar)
 
 
 def _split_sentences(script: str) -> list[str]:
@@ -204,9 +319,60 @@ def _split_sentences(script: str) -> list[str]:
     return [s.strip() for s in re.split(r"(?<=[.!?])\s+", cleaned) if s.strip()]
 
 
+_LOOP_ACTION_VERBS = {
+    "open", "start", "move", "switch", "put", "set", "pay", "cut", "invest",
+    "save", "earn", "build", "apply", "use", "stop", "avoid", "check",
+}
+_LOOP_FINANCE_WORDS = {
+    "compound", "interest", "return", "debt", "tax", "salary", "income",
+    "budget", "credit", "fund", "retirement", "savings", "ira", "401k",
+    "percent", "%", "$", "rate", "fee", "match",
+}
+
+
+def _sentence_action_score(sent: str) -> int:
+    """Score a sentence for loop-ending quality: action verbs + finance keywords."""
+    lower = sent.lower()
+    words = set(re.findall(r"[a-z0-9$%]+", lower))
+    return (
+        sum(1 for v in _LOOP_ACTION_VERBS if v in words) * 2
+        + sum(1 for f in _LOOP_FINANCE_WORDS if f in lower)
+    )
+
+
 def _loop_ending_line(script: str) -> str:
-    first_number = _extract_first_number(script)
-    return f"Save this, and if {first_number} surprised you, replay the first 3 seconds."
+    """
+    Build a context-aware rewatch prompt by extracting the script's core insight.
+
+    Picks the highest-scoring sentence (action verbs + finance keywords) from the
+    second half of the script, skipping CTA-type lines. Falls back to a mid-script
+    number if no substantive sentence is found.
+    """
+    sentences = _split_sentences(_clean_script_text(script))
+    cta_words = {"follow", "save this", "subscribe", "replay", "comment", "share"}
+
+    # Restrict to second half of script — first half is hook/proof, second half has the takeaway.
+    second_half = sentences[len(sentences) // 2:] if len(sentences) >= 4 else sentences
+
+    candidates = [
+        s for s in second_half
+        if not any(w in s.lower() for w in cta_words) and len(s.split()) >= 4
+    ]
+
+    core_insight = ""
+    if candidates:
+        # Pick highest action-verb + finance-keyword density sentence.
+        best = max(candidates, key=_sentence_action_score)
+        words = best.split()
+        core_insight = " ".join(words[:8]).rstrip(".,!?")
+
+    if core_insight:
+        return f"Did you catch that? Replay to see if {core_insight} applies to you."
+    # Fallback: find a mid-script number (skip the first one, which is the hook).
+    # Referencing the hook number again in the loop ending provides no new curiosity trigger.
+    all_numbers = re.findall(r"\$?\d[\d,]*(?:\.\d+)?%?", _clean_script_text(script))
+    mid_number = all_numbers[1] if len(all_numbers) >= 2 else (all_numbers[0] if all_numbers else "this")
+    return f"Did you catch the {mid_number} detail? Replay from the middle to see how it works."
 
 
 def _enforce_loop_ending(script: str) -> str:
@@ -227,17 +393,25 @@ def _enforce_loop_ending(script: str) -> str:
 
 def assess_hook_strength(script: str) -> tuple[bool, str]:
     """
-    Hook quality gate: first beat should include number + pain + consequence framing.
+    Hook quality gate:
+    1. First word (index 0-2) must contain a number — viewer must see the stat before 1.2s.
+    2. First 14 words must include a pain term and a consequence term.
     """
     tokens = re.findall(r"[A-Za-z0-9$%']+", _clean_script_text(script))
     hook_tokens = tokens[:14]
     hook_text = " ".join(hook_tokens).lower()
-    has_number = any(re.search(r"\d", t) for t in hook_tokens)
+
+    # Rule 1: number must appear in the first 3 tokens (≤1.2s at 2.5 WPS)
+    first_three = tokens[:3]
+    if not any(re.search(r"\d", t) for t in first_three):
+        return False, (
+            "hook number not in first 3 words — first word must be a stat "
+            f"(found: '{' '.join(first_three)}')"
+        )
+
     has_pain = any(term in hook_text for term in HOOK_PAIN_TERMS)
     has_consequence = any(term in hook_text for term in HOOK_CONSEQUENCE_TERMS)
 
-    if not has_number:
-        return False, "hook missing number in opening beat"
     if not has_pain:
         return False, "hook missing pain framing in opening beat"
     if not has_consequence:
@@ -253,17 +427,31 @@ def _title_score(title: str, topic: dict) -> float:
     score = 0.0
     length = len(cleaned)
 
-    if 42 <= length <= 60:
+    if 42 <= length <= 55:   # optimal SERP range — visible on mobile without truncation
         score += 2.2
-    elif 32 <= length <= 68:
+    elif 32 <= length < 42:
         score += 1.0
+    elif 55 < length <= 70:
+        score -= 0.5   # truncated on mobile SERP, wastes tail keywords
     else:
-        score -= 1.0
+        score -= 1.5   # too short or too long
 
     if re.search(r"[\d$%]", cleaned):
         score += 2.0
-    if any(term in lower for term in TITLE_POWER_TERMS):
-        score += 1.2
+    # Use finance-specific power terms for finance pillars (higher signal for money CTR)
+    pillar = str(topic.get("pillar", "")).lower()
+    _power_terms = (
+        TITLE_POWER_TERMS_FINANCE
+        if pillar in {"investing", "budgeting", "debt", "tax", "career_income"}
+        else TITLE_POWER_TERMS
+    )
+    if any(term in lower for term in _power_terms):
+        score += 1.5
+    # Extra boost for the proven number-verb-noun pattern ("5 Mistakes With...")
+    if re.search(r"^\d+\s+\w+\s+\w+\s", lower):
+        score += 2.0
+    elif re.search(r"^\d+\s+", lower):
+        score += 1.0
     if any(tok in lower for tok in str(topic.get("topic", "")).lower().split()[:2]):
         score += 0.8
     if "?" in cleaned:
@@ -311,14 +499,35 @@ def _retention_prompt_block(retention_feedback: dict | None) -> str:
     parts: list[str] = []
     if dropoffs:
         stamp_text = ", ".join(f"{float(s):.0f}s" for s in dropoffs[:5])
-        parts.append(
-            f"- Retention dips have appeared around {stamp_text}; add novelty or a new number before those beats."
-        )
+        parts.append(f"- Viewers have dropped off around {stamp_text}.")
+        # Map each drop-off range to a concrete structural intervention.
+        for s in dropoffs[:5]:
+            t = float(s)
+            if t <= 5:
+                parts.append(
+                    "  → The hook (first 5s) is losing viewers. Lead with a bigger, more specific number. "
+                    "Cut any introductory words before the stat."
+                )
+            elif t <= 15:
+                parts.append(
+                    "  → Viewers leave right after the hook. The 'simple math proof' step (5–15s) is too slow. "
+                    "Replace explanation with one concrete comparison (e.g., BEFORE vs AFTER numbers)."
+                )
+            elif t <= 32:
+                parts.append(
+                    "  → Mid-video drop at the explanation segment. Keep the worked example to 2 sentences max — "
+                    "one specific dollar amount, one surprising outcome. Cut filler phrases."
+                )
+            else:
+                parts.append(
+                    "  → Late drop-off: the action step or CTA isn't landing. Make the takeaway a single, "
+                    "specific action ('open a Roth IRA today') rather than general advice."
+                )
     if notes:
         parts.append(f"- Recent retention notes: {notes}")
     if not parts:
         return ""
-    return "\nRETENTION FEEDBACK (use this to improve watch-through):\n" + "\n".join(parts) + "\n"
+    return "\nRETENTION FEEDBACK (apply these structural fixes):\n" + "\n".join(parts) + "\n"
 
 
 def _coerce_start_word(value, max_words: int, default: int = 0) -> int:
@@ -395,13 +604,15 @@ def _ensure_overlay_density(overlays: list[dict], script: str, topic: dict) -> l
             },
         )
 
-    # Ensure CTA overlay near the end.
+    # Ensure CTA overlay near the end — use pillar-specific copy.
     cta_start = max(words - 12, 0)
     if not any(o["type"] == "cta" for o in normalized):
+        pillar = str(topic.get("pillar", "")).lower()
+        cta_copy = PILLAR_CTA_TEXT.get(pillar, "Follow for more money tips")
         normalized.append(
             {
                 "type": "cta",
-                "text": "Follow for more money tips",
+                "text": cta_copy,
                 "start_word": cta_start,
                 "duration_s": 4.5,
             }
@@ -415,6 +626,26 @@ def _ensure_overlay_density(overlays: list[dict], script: str, topic: dict) -> l
         "START SMALL",
         "STAY CONSISTENT",
     ]
+
+    # Hook exclusion zone: no other overlay within ±1.25s (≈3 words) of the hook_number.
+    # Two overlays at time-zero split viewer attention during the most critical moment.
+    HOOK_EXCL_WORDS = int(1.25 * WPS)  # ≈3 words
+    hook_ovs = [o for o in normalized if o["type"] == "hook_number"]
+    hook_start = hook_ovs[0]["start_word"] if hook_ovs else 0
+    hook_end = hook_start + int((hook_ovs[0]["duration_s"] if hook_ovs else 4.0) * WPS)
+    # Remove any non-hook overlay that falls inside the exclusion zone.
+    normalized = [
+        o for o in normalized
+        if o["type"] == "hook_number"
+        or not (hook_start - HOOK_EXCL_WORDS <= o["start_word"] < hook_end + HOOK_EXCL_WORDS)
+    ]
+
+    # Enforce 2.5s minimum gap between consecutive label overlays.
+    MIN_LABEL_GAP_WORDS = int(2.5 * WPS)  # ~6 words at 2.5 WPS
+    label_ends: list[int] = sorted(
+        ov["start_word"] + int(ov["duration_s"] * WPS)
+        for ov in normalized if ov.get("type") == "label"
+    )
 
     # Fill missing density to reduce static periods.
     if len(normalized) < MIN_OVERLAYS:
@@ -434,6 +665,12 @@ def _ensure_overlay_density(overlays: list[dict], script: str, topic: dict) -> l
                 for ov in normalized
             ):
                 continue
+            # Enforce minimum gap from the previous label end.
+            if any(candidate < end + MIN_LABEL_GAP_WORDS for end in label_ends):
+                continue
+            label_end = candidate + int(2.0 * WPS)
+            label_ends.append(label_end)
+            label_ends.sort()
             normalized.append(
                 {
                     "type": "label",
@@ -565,7 +802,7 @@ Return ONLY this JSON, no explanation:
     {{"type": "cta", "text": "Follow for more money tips", "start_word": 120, "duration_s": 5.0}}
   ],
   "stat_citations": ["<short source label 1>", "<short source label 2 optional>"],
-  "description": "<2-3 sentence YouTube description. End with: '⚠️ Educational only. Not financial advice.'> #Shorts",
+  "description": "<2-3 sentence YouTube description — no disclaimer, no hashtags>",
   "hashtags": ["#Shorts", "#PersonalFinance", "#MoneyTips", "<2 more relevant tags>"]
 }}"""
 

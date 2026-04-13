@@ -16,6 +16,7 @@ import random
 import re
 import shutil
 import subprocess
+import time
 from functools import lru_cache
 from pathlib import Path
 
@@ -40,16 +41,34 @@ BG_MIN_CUT_S = 1.5
 BG_MAX_CUT_S = 3.0
 BG_ABS_MAX_SHOT_S = 4.0
 BG_TARGET_CLIPS = 4
+BG_MIN_SOURCES = 2
 
 CAPTION_WINDOW_WORDS = 7
 MAX_CONCURRENT_LABELS = 1
 
+# Import pillar gradients from thumbnail_gen to keep a single source of truth.
+# New pillars added there will automatically apply here too.
+try:
+    from pipeline.thumbnail_gen import PILLAR_GRADIENTS as _PILLAR_GRADIENTS
+    from pipeline.thumbnail_gen import DEFAULT_GRADIENT as _DEFAULT_GRADIENT
+except Exception:
+    logger.warning("thumbnail_gen gradients unavailable; using renderer defaults")
+    _PILLAR_GRADIENTS = {
+        "investing": ((15, 15, 25), (30, 30, 60)),
+        "career_income": ((10, 20, 10), (20, 50, 30)),
+        "debt": ((25, 10, 10), (60, 20, 20)),
+        "tax": ((15, 10, 25), (40, 20, 60)),
+        "budgeting": ((10, 20, 30), (20, 50, 80)),
+    }
+    _DEFAULT_GRADIENT = _PILLAR_GRADIENTS["investing"]
+
+# Keep BACKGROUNDS for any legacy references (mapped from the shared dict).
 BACKGROUNDS = [
-    [(15, 15, 25), (30, 30, 60)],    # deep navy  (investing)
-    [(10, 20, 10), (20, 50, 30)],    # dark green (career_income)
-    [(25, 10, 10), (60, 20, 20)],    # dark red   (debt)
-    [(15, 10, 25), (40, 20, 60)],    # deep purple(tax)
-    [(10, 20, 30), (20, 50, 80)],    # ocean blue (budgeting)
+    [_PILLAR_GRADIENTS["investing"][0],     _PILLAR_GRADIENTS["investing"][1]],
+    [_PILLAR_GRADIENTS["career_income"][0], _PILLAR_GRADIENTS["career_income"][1]],
+    [_PILLAR_GRADIENTS["debt"][0],          _PILLAR_GRADIENTS["debt"][1]],
+    [_PILLAR_GRADIENTS["tax"][0],           _PILLAR_GRADIENTS["tax"][1]],
+    [_PILLAR_GRADIENTS["budgeting"][0],     _PILLAR_GRADIENTS["budgeting"][1]],
 ]
 
 
@@ -60,7 +79,11 @@ BACKGROUNDS = [
 @lru_cache(maxsize=64)
 def _get_font(size: int):
     from PIL import ImageFont
+    # Bundled font checked first — guarantees consistent look across macOS/Linux/CI.
+    # To use: place any .ttf bold font at pipeline/assets/brand_font.ttf
+    _asset_font = Path(__file__).parent / "assets" / "brand_font.ttf"
     candidates = [
+        str(_asset_font),                                                        # bundled brand font
         "/System/Library/Fonts/Helvetica.ttc",
         "/System/Library/Fonts/Arial Unicode.ttf",
         "/Library/Fonts/Arial Bold.ttf",
@@ -240,7 +263,7 @@ def _make_spoken_caption_image(
 
     line_h = _text_height(draw, "Ag", font)
     total_h = len(lines) * line_h + (len(lines) - 1) * 12
-    y0 = int(h * 0.79)
+    y0 = int(h * 0.74)
     box_pad_x = 26
     box_pad_y = 18
     draw.rounded_rectangle(
@@ -275,21 +298,14 @@ def _make_gradient_background(color_top: tuple, color_bottom: tuple,
     img = Image.new("RGB", (1, 2))
     img.putpixel((0, 0), color_top)
     img.putpixel((0, 1), color_bottom)
-    return img.resize((w, h), Image.BILINEAR)
+    return img.resize((w, h), Image.Resampling.BILINEAR)
 
 
 def _make_background_image(pillar: str = "investing"):
     """Gradient background with watermark. Returns RGBA PIL Image."""
     from PIL import ImageDraw
-    palette_map = {
-        "investing":    BACKGROUNDS[0],
-        "career_income": BACKGROUNDS[1],
-        "debt":         BACKGROUNDS[2],
-        "tax":          BACKGROUNDS[3],
-        "budgeting":    BACKGROUNDS[4],
-    }
-    colors = palette_map.get(pillar, BACKGROUNDS[0])
-    bg = _make_gradient_background(colors[0], colors[1]).convert("RGBA")
+    top, bottom = _PILLAR_GRADIENTS.get(pillar, _DEFAULT_GRADIENT)
+    bg = _make_gradient_background(top, bottom).convert("RGBA")
     draw = ImageDraw.Draw(bg)
     font = _get_font(46)
     wm_text = "ClearWealth"
@@ -313,8 +329,55 @@ def _make_background_image(pillar: str = "investing"):
 # Single source of truth for pillar → Pexels search queries (shared with footage.py).
 from pipeline.footage import PILLAR_VISUAL_QUERIES as PILLAR_BG_QUERIES
 
+VISUAL_TOPIC_HINTS = {
+    "401k": ["401k retirement account phone app", "retirement portfolio statement closeup"],
+    "roth": ["roth ira retirement savings planning", "retirement account app checking"],
+    "etf": ["etf investing app smartphone", "stock index fund chart phone"],
+    "index": ["index fund chart smartphone closeup", "long term investing app user"],
+    "compound": ["compound interest chart growth animation style", "savings growth calculator screen"],
+    "credit": ["credit card statement bills desk", "person paying credit card bill"],
+    "debt": ["debt payoff planning notebook", "credit card debt stress closeup"],
+    "budget": ["monthly budget spreadsheet laptop", "family budgeting expenses notebook"],
+    "tax": ["tax return paperwork laptop", "irs forms desk closeup"],
+    "salary": ["salary negotiation office meeting", "pay raise celebration office"],
+    "income": ["extra income side hustle laptop", "paycheck direct deposit phone"],
+}
 
-def _fetch_pexels_clips(pillar: str, work_dir: Path, target_count: int = BG_TARGET_CLIPS) -> list[Path]:
+
+def _build_visual_queries(pillar: str, topic: str = "", script_text: str = "") -> list[str]:
+    """Build topic-aware visual queries so b-roll matches spoken content."""
+    base_queries = list(PILLAR_BG_QUERIES.get(pillar, PILLAR_BG_QUERIES["investing"]))
+    hint_queries: list[str] = []
+    haystack = f"{topic} {script_text}".lower()
+    for key, queries in VISUAL_TOPIC_HINTS.items():
+        if key in haystack:
+            hint_queries.extend(queries)
+
+    if topic:
+        topic_clean = " ".join(re.findall(r"[a-z0-9]+", topic.lower())).strip()
+        if topic_clean:
+            hint_queries.append(f"{topic_clean} finance smartphone closeup")
+            hint_queries.append(f"{topic_clean} money planning person")
+
+    merged = hint_queries + base_queries
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for query in merged:
+        q = " ".join(str(query).split()).strip()
+        if not q or q in seen:
+            continue
+        seen.add(q)
+        deduped.append(q)
+    return deduped
+
+
+def _fetch_pexels_clips(
+    pillar: str,
+    work_dir: Path,
+    target_count: int = BG_TARGET_CLIPS,
+    topic: str = "",
+    script_text: str = "",
+) -> list[Path]:
     """
     Download several Pexels clips for montage pacing.
     Returns zero or more raw clip paths.
@@ -325,7 +388,7 @@ def _fetch_pexels_clips(pillar: str, work_dir: Path, target_count: int = BG_TARG
     if not api_key:
         return []
 
-    queries = PILLAR_BG_QUERIES.get(pillar, PILLAR_BG_QUERIES["investing"])
+    queries = _build_visual_queries(pillar, topic=topic, script_text=script_text)
     headers = {"Authorization": api_key}
     clips: list[Path] = []
     seen_links: set[str] = set()
@@ -360,22 +423,29 @@ def _fetch_pexels_clips(pillar: str, work_dir: Path, target_count: int = BG_TARG
             seen_links.add(link)
 
             dest = work_dir / f"bg_raw_{len(clips):02d}.mp4"
-            try:
-                dl = requests.get(link, stream=True, timeout=60)
-                dl.raise_for_status()
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                with dest.open("wb") as fh:
-                    for chunk in dl.iter_content(65536):
-                        if chunk:
-                            fh.write(chunk)
+            downloaded = False
+            for attempt in range(3):
+                try:
+                    dl = requests.get(link, stream=True, timeout=60)
+                    dl.raise_for_status()
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    with dest.open("wb") as fh:
+                        for chunk in dl.iter_content(65536):
+                            if chunk:
+                                fh.write(chunk)
+                    downloaded = True
+                    break
+                except Exception as exc:
+                    logger.warning("Pexels download attempt %d/3 failed: %s", attempt + 1, exc)
+                    if dest.exists():
+                        dest.unlink()
+                    if attempt < 2:
+                        time.sleep(5)
+            if downloaded:
                 clips.append(dest)
                 logger.info("Downloaded Pexels bg clip %d/%d: %s (query=%s)", len(clips), target_count, dest, query)
                 if len(clips) >= target_count:
                     break
-            except Exception as exc:
-                logger.warning("Pexels download failed: %s", exc)
-                if dest.exists():
-                    dest.unlink()
 
     return clips
 
@@ -524,7 +594,18 @@ def _build_background_frame(
         blended = Image.blend(video_frame, gradient_img.convert("RGB"), alpha=gradient_blend)
         return blended.convert("RGBA")
     else:
-        return gradient_img.copy()
+        # Fallback motion so visuals never feel static when stock clips are unavailable.
+        base = gradient_img.convert("RGB")
+        zoom = 1.04 + (0.015 * math.sin(t_mid * 0.55))
+        scaled_w = int(SHORT_W * zoom)
+        scaled_h = int(SHORT_H * zoom)
+        resized = base.resize((scaled_w, scaled_h), Image.BICUBIC)
+        offset_x = int((scaled_w - SHORT_W) / 2 + math.sin(t_mid * 0.31) * 14)
+        offset_y = int((scaled_h - SHORT_H) / 2 + math.cos(t_mid * 0.27) * 22)
+        left = max(0, min(offset_x, scaled_w - SHORT_W))
+        top = max(0, min(offset_y, scaled_h - SHORT_H))
+        moving = resized.crop((left, top, left + SHORT_W, top + SHORT_H))
+        return moving.convert("RGBA")
 
 
 # ---------------------------------------------------------------------------
@@ -581,6 +662,10 @@ def _make_overlay_image(overlay: dict, w: int = SHORT_W, h: int = SHORT_H, label
     elif otype == "label":
         text = _clean_text(overlay.get("text", "")).upper()
         lines, font = _wrap_fit_lines(draw, text, max_width=int(w * 0.76), start_size=60, min_size=32, max_lines=2)
+        # Warn if the rendered text was truncated (joined lines shorter than input)
+        rendered_text = " ".join(lines)
+        if len(rendered_text) < len(text) - 3:
+            logger.warning("Label text clipped during render: '%s' → '%s'", text, rendered_text)
         block_h = sum(_text_height(draw, ln, font) for ln in lines) + 8 * max(0, len(lines) - 1)
         pad = 18
         y0 = label_y0 if label_y0 is not None else int(h * 0.68)
@@ -625,7 +710,7 @@ def _make_overlay_image(overlay: dict, w: int = SHORT_W, h: int = SHORT_H, label
         lines, font = _wrap_fit_lines(draw, text, max_width=int(w * 0.80), start_size=58, min_size=32, max_lines=2)
         block_h = sum(_text_height(draw, ln, font) for ln in lines) + 8 * max(0, len(lines) - 1)
         pad = 24
-        y0 = int(h * 0.80)
+        y0 = int(h * 0.82)
         card_w = int(w * 0.84)
         x0 = (w - card_w) // 2
         draw.rounded_rectangle(
@@ -640,11 +725,22 @@ def _make_overlay_image(overlay: dict, w: int = SHORT_W, h: int = SHORT_H, label
 # Overlay helpers
 # ---------------------------------------------------------------------------
 
+_wps_fallback_warned: bool = False  # deduplicate per-process; reset per render via render()
+
+
 def _ov_start(ov: dict) -> float:
     """Return overlay start time. Uses ElevenLabs word timestamp when available."""
+    global _wps_fallback_warned
     if "start_time_s" in ov:
         return float(ov["start_time_s"])
-    return round(int(ov.get("start_word", 0)) / WPS, 2)
+    start_word = int(ov.get("start_word", 0))
+    if not _wps_fallback_warned:
+        logger.debug(
+            "One or more overlays using WPS fallback for timing — "
+            "ensure word_timestamps are available for precise sync"
+        )
+        _wps_fallback_warned = True
+    return round(start_word / WPS, 2)
 
 
 def _ov_end(ov: dict) -> float:
@@ -667,7 +763,10 @@ def _inject_proof_tags(
         if cite_idx >= len(stat_citations):
             break
         if ov.get("type") in {"hook_number", "comparison"}:
-            proof_start = round(_ov_start(ov) + 0.4, 3)
+            # Center the proof tag in the middle of the overlay window so it's
+            # visible for the full tag duration even on short overlays.
+            ov_mid = (_ov_start(ov) + _ov_end(ov)) / 2
+            proof_start = round(max(_ov_start(ov) + 0.2, ov_mid - 0.8), 3)
             if proof_start < duration_s - 1.5:
                 result.append({
                     "type": "proof_tag",
@@ -710,10 +809,17 @@ def _sanitize_overlays(
             dur = max(1.2, min(float((ov or {}).get("duration_s", 3.0)), 5.0))
         except (TypeError, ValueError):
             dur = 3.0
-        # Compute start time: prefer real word timestamp, then preserve any
-        # already-computed start_time_s (e.g. from a prior sanitize pass),
-        # and only fall back to the WPS constant as a last resort.
-        if word_timestamps and start_word < len(word_timestamps):
+        # Compute start time.
+        # Priority:
+        #   1. Injected overlays (e.g. cadence labels) that carry start_time_s but no
+        #      start_word key — trust their precise float directly.
+        #   2. Script overlays with start_word + real ElevenLabs word timestamps.
+        #   3. Preserved start_time_s from a prior sanitize pass.
+        #   4. WPS constant fallback (least accurate).
+        if "start_word" not in (ov or {}) and "start_time_s" in (ov or {}):
+            # Injected label with precise time — trust it, skip word-index lookup.
+            start_time_s = float((ov or {})["start_time_s"])
+        elif word_timestamps and start_word < len(word_timestamps):
             start_time_s = float(word_timestamps[start_word])
         elif "start_time_s" in (ov or {}):
             start_time_s = float((ov or {})["start_time_s"])
@@ -721,17 +827,29 @@ def _sanitize_overlays(
             start_time_s = start_word / WPS
         if start_time_s >= duration_s:
             continue
+        # Clamp so overlay always ends before the video finishes.
+        dur = min(dur, max(0.5, round(duration_s - start_time_s - 0.05, 2)))
         cleaned = dict(ov)
         cleaned["type"] = kind
         cleaned["start_word"] = start_word
         cleaned["start_time_s"] = round(start_time_s, 3)
         cleaned["duration_s"] = dur
         safe.append(cleaned)
-    safe.sort(key=lambda item: item["start_word"])
+    safe.sort(key=lambda item: item["start_time_s"])
     return safe
 
 
-def _inject_cadence_labels(overlays: list, vo_duration: float) -> list[dict]:
+_PILLAR_CADENCE_LABELS: dict[str, list[str]] = {
+    "investing":     ["REAL RETURNS", "THE MATH", "PROOF POINT", "TIME MATTERS"],
+    "budgeting":     ["REAL EXAMPLE", "SIMPLE MATH", "MONEY MOVE", "THIS IS KEY"],
+    "debt":          ["DEBT TRAP", "REAL COST", "THE MATH", "BREAK FREE"],
+    "tax":           ["TAX FACT", "THE RULE", "PROOF POINT", "THIS IS KEY"],
+    "career_income": ["SALARY MOVE", "WHY IT MATTERS", "THE MATH", "REAL IMPACT"],
+}
+_DEFAULT_CADENCE_LABELS = ["REAL EXAMPLE", "SIMPLE MATH", "THIS IS KEY", "TIME MATTERS"]
+
+
+def _inject_cadence_labels(overlays: list, vo_duration: float, pillar: str = "") -> list[dict]:
     """
     Insert label cards until no gap exceeds MAX_VISUAL_GAP_S.
 
@@ -739,7 +857,7 @@ def _inject_cadence_labels(overlays: list, vo_duration: float) -> list[dict]:
     original gap once, but a long gap (e.g. 10s) needs multiple bisections
     to stay under the 2s threshold. The loop re-scans after each insertion.
     """
-    cadence_labels = ["REAL EXAMPLE", "SIMPLE MATH", "THIS IS KEY", "TIME MATTERS"]
+    cadence_labels = _PILLAR_CADENCE_LABELS.get(pillar, _DEFAULT_CADENCE_LABELS)
     injected = list(overlays)
     label_idx = 0
 
@@ -762,7 +880,8 @@ def _inject_cadence_labels(overlays: list, vo_duration: float) -> list[dict]:
                 injected.append({
                     "type": "label",
                     "text": cadence_labels[label_idx % len(cadence_labels)],
-                    "start_word": int(midpoint * WPS),
+                    # Store precise float time directly — no start_word → avoids int-truncation drift
+                    "start_time_s": round(midpoint, 3),
                     "duration_s": min(2.1, gap - 0.2),
                 })
                 label_idx += 1
@@ -779,14 +898,18 @@ def _inject_cadence_labels(overlays: list, vo_duration: float) -> list[dict]:
 # Audio helpers
 # ---------------------------------------------------------------------------
 
-def _mean_volume_db(path: Path) -> float | None:
+def _mean_volume_db(path: Path) -> tuple[float | None, float | None]:
+    """Returns (mean_db, max_db) from ffmpeg volumedetect. Either may be None."""
     result = subprocess.run(
         [_bin("ffmpeg"), "-hide_banner", "-i", str(path), "-af", "volumedetect", "-f", "null", "-"],
         capture_output=True, text=True, timeout=120,
     )
     text = (result.stderr or "") + "\n" + (result.stdout or "")
-    m = re.search(r"mean_volume:\s*(-?\d+(?:\.\d+)?)\s*dB", text)
-    return float(m.group(1)) if m else None
+    m_mean = re.search(r"mean_volume:\s*(-?\d+(?:\.\d+)?)\s*dB", text)
+    m_max = re.search(r"max_volume:\s*(-?\d+(?:\.\d+)?)\s*dB", text)
+    mean_db = float(m_mean.group(1)) if m_mean else None
+    max_db = float(m_max.group(1)) if m_max else None
+    return mean_db, max_db
 
 
 # ---------------------------------------------------------------------------
@@ -814,9 +937,16 @@ def _quality_gate(output_path: Path, expected_duration: float) -> None:
     duration = float(probe.get("format", {}).get("duration", 0.0) or 0.0)
     if abs(duration - expected_duration) > 3.0:
         raise RuntimeError(f"Duration drift: rendered {duration:.1f}s vs voiceover {expected_duration:.1f}s")
-    mean_db = _mean_volume_db(output_path)
+    mean_db, max_db = _mean_volume_db(output_path)
     if mean_db is not None and mean_db < -19.5:
         raise RuntimeError(f"Audio too quiet: mean {mean_db:.1f} dB")
+    # YouTube loudness normalization flattens clipped/over-compressed audio.
+    # Warn if peak exceeds -3 dBTP (YouTube's recommended headroom target).
+    if max_db is not None and max_db > -3.0:
+        logger.warning(
+            "Audio peak %.1f dB exceeds -3 dBTP — may sound flat after YouTube loudness normalization",
+            max_db,
+        )
 
 
 def _get_voiceover_duration(path: Path) -> float:
@@ -850,6 +980,9 @@ def render(
        no -loop 1 inputs, no timeout risk.
     6. Mix voiceover + background music with loudnorm.
     """
+    global _wps_fallback_warned
+    _wps_fallback_warned = False  # reset so each render gets at most one WPS fallback warning
+
     if not voiceover_path.exists():
         raise FileNotFoundError(f"Voiceover not found: {voiceover_path}")
 
@@ -859,8 +992,14 @@ def render(
 
     vo_duration = _get_voiceover_duration(voiceover_path)
     logger.info("Short voiceover duration: %.1fs", vo_duration)
+    if not (35.0 <= vo_duration <= 65.0):
+        raise RuntimeError(
+            f"Voiceover duration {vo_duration:.1f}s is outside the 35–65s target range. "
+            "Check the script word count or TTS speed settings."
+        )
 
     pillar = script_data.get("pillar", "investing")
+    topic_slug = re.sub(r"[^a-z0-9]+", "-", script_data.get("topic", pillar).lower()).strip("-")
     bg_img = _make_background_image(pillar)
 
     # Pexels background video — true montage pacing (3-6 clips, cuts every 1.5–3s)
@@ -868,7 +1007,13 @@ def render(
     montage_plan: list | None = None
     if os.environ.get("PEXELS_API_KEY"):
         try:
-            raw_clips = _fetch_pexels_clips(pillar, work_dir, target_count=BG_TARGET_CLIPS)
+            raw_clips = _fetch_pexels_clips(
+                pillar,
+                work_dir,
+                target_count=BG_TARGET_CLIPS,
+                topic=str(script_data.get("topic", "")),
+                script_text=str(script_data.get("voiceover_script", "")),
+            )
             if raw_clips:
                 bg_frames_sources = []
                 for ci, clip in enumerate(raw_clips):
@@ -876,12 +1021,19 @@ def render(
                     frames = _extract_bg_frames(processed, work_dir, fps=BG_FRAME_FPS, tag=str(ci))
                     bg_frames_sources.append(frames)
                 montage_plan = _build_bg_montage_plan(
-                    vo_duration, len(bg_frames_sources), seed_hint=pillar
+                    vo_duration, len(bg_frames_sources), seed_hint=topic_slug
                 )
                 logger.info(
                     "Background montage ready: %d clips, %d shots",
                     len(bg_frames_sources), len(montage_plan),
                 )
+                if len(raw_clips) < BG_MIN_SOURCES:
+                    logger.warning(
+                        "Only %d background source clip(s) fetched (<%d preferred). "
+                        "Continuing with available clip(s) plus overlay cadence.",
+                        len(raw_clips),
+                        BG_MIN_SOURCES,
+                    )
         except Exception as exc:
             logger.warning("Background video unavailable, using gradient: %s", exc)
             bg_frames_sources = None
@@ -890,17 +1042,47 @@ def render(
     word_timestamps: list[float] = script_data.get("word_timestamps") or []
     if word_timestamps:
         logger.info("Using ElevenLabs word timestamps (%d words)", len(word_timestamps))
+    else:
+        logger.warning(
+            "Word timestamps unavailable — using WPS timing fallback for overlays "
+            "(captions will be less precise)."
+        )
 
     # Step 1: clean overlays from script
     overlays = _sanitize_overlays(script_data.get("overlays", []), vo_duration, word_timestamps)
 
-    # Step 2: inject cadence labels into actual visual gaps
-    overlays = _inject_cadence_labels(overlays, vo_duration)
+    # Step 2: inject cadence labels into actual visual gaps (pillar-specific copy)
+    _overlays_before_cadence = len(overlays)
+    overlays = _inject_cadence_labels(overlays, vo_duration, pillar=pillar)
     overlays = _sanitize_overlays(overlays, vo_duration, word_timestamps)  # re-sort + re-clamp after injection
+    logger.info(
+        "Overlays: %d from script → %d cadence-injected → %d total after sanitize",
+        _overlays_before_cadence,
+        len(overlays) - _overlays_before_cadence,
+        len(overlays),
+    )
 
     # Step 3: inject proof tags AFTER sanitize (proof_tag is not in the sanitize allowlist)
     stat_citations = script_data.get("stat_citations") or []
     overlays = _inject_proof_tags(overlays, stat_citations, vo_duration)
+
+    # Step 3b: inject on-screen "Educational only. Not financial advice." disclaimer
+    # if any overlay contains a dollar amount or percentage — required for finance content.
+    has_financial_claim = any(
+        "$" in str(ov.get("text", "")) or "%" in str(ov.get("text", ""))
+        or "$" in str(ov.get("left", "")) or "$" in str(ov.get("right", ""))
+        for ov in overlays
+    )
+    if has_financial_claim:
+        disclaimer_start = max(0.0, round(vo_duration - 2.2, 2))
+        overlays.append({
+            "type": "label",
+            "text": "EDUCATIONAL ONLY. NOT ADVICE.",
+            "start_time_s": disclaimer_start,
+            "duration_s": 2.0,
+        })
+        logger.info("Injected on-screen financial disclaimer at %.1fs", disclaimer_start)
+
     logger.info("Total overlays after cadence + proof injection: %d", len(overlays))
 
     # Pre-render quality check: warn on overlapping label windows
@@ -951,7 +1133,8 @@ def render(
                 frame = Image.alpha_composite(frame, _make_overlay_image(ov))
 
         # Word-synced spoken captions (phrase-by-phrase highlight, active word in yellow)
-        if word_timestamps and spoken_words_list:
+        has_active_cta = any(ov.get("type") == "cta" for ov in active)
+        if word_timestamps and spoken_words_list and not has_active_cta:
             caption_img = _make_spoken_caption_image(spoken_words_list, word_timestamps, t_mid)
             frame = Image.alpha_composite(frame, caption_img)
 
@@ -969,10 +1152,14 @@ def render(
     logger.info("Composited %d segment frames via Pillow", len(events_sorted) - 1)
 
     # Step 6: audio filter — sidechain ducking under voice + final limiter at -1.0 dBTP
-    if bgmusic_path.exists():
+    # SHORT_MUSIC=0 disables background music (useful when music tone doesn't fit content).
+    music_enabled = os.environ.get("SHORT_MUSIC", "1").lower() in {"1", "true", "yes"}
+    if bgmusic_path.exists() and music_enabled:
         audio_filter = (
-            "[1:a]volume=1.0[voice];"
-            "[2:a]volume=0.15[raw_music];"
+            "[1:a]highpass=f=85,lowpass=f=12000,"
+            "acompressor=threshold=-17dB:ratio=2.2:attack=15:release=180:makeup=3,"
+            "volume=1.05[voice];"
+            "[2:a]volume=0.11[raw_music];"
             # Sidechain compress: voice triggers music level reduction while speaking
             "[raw_music][voice]sidechaincompress=threshold=0.015:ratio=6:attack=5:release=200[music_ducked];"
             "[voice][music_ducked]amix=inputs=2:duration=first[mix];"
@@ -980,7 +1167,11 @@ def render(
         )
         audio_inputs = ["-i", str(voiceover_path), "-i", str(bgmusic_path)]
     else:
-        audio_filter = f"[1:a]loudnorm=I={TARGET_LOUDNESS}:TP=-1.0:LRA=7[a]"
+        audio_filter = (
+            "[1:a]highpass=f=85,lowpass=f=12000,"
+            "acompressor=threshold=-17dB:ratio=2.2:attack=15:release=180:makeup=3,"
+            f"loudnorm=I={TARGET_LOUDNESS}:TP=-1.0:LRA=7[a]"
+        )
         audio_inputs = ["-i", str(voiceover_path)]
 
     # Step 6: FFmpeg encode — concat image sequence + audio only
@@ -998,7 +1189,7 @@ def render(
         "-pix_fmt", "yuv420p",
         "-profile:v", "high",
         "-g", "60",
-        "-c:a", "aac", "-b:a", "128k",
+        "-c:a", "aac", "-b:a", "160k",
         "-movflags", "+faststart",
         str(output_path),
     ]

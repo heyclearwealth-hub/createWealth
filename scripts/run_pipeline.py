@@ -33,6 +33,18 @@ logger = logging.getLogger(__name__)
 
 WORKSPACE = Path("workspace")
 DRY_RUN = os.environ.get("DRY_RUN", "0") == "1"
+
+
+def _parse_hook_threshold() -> float:
+    raw = os.environ.get("HOOK_SCORE_THRESHOLD", "0.75")
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        logger.warning("Invalid HOOK_SCORE_THRESHOLD='%s' — falling back to 0.75", raw)
+        return 0.75
+
+
+HOOK_SCORE_THRESHOLD = _parse_hook_threshold()
 MAX_STARTUP_DELAY_SECONDS = max(
     0,
     int(os.environ.get("MAX_STARTUP_DELAY_SECONDS", "900") or "900"),
@@ -143,11 +155,15 @@ def main() -> None:
     # Step 4: Hook gate
     from pipeline.hook_gate import gate
 
-    hook_result = gate(script_data)
+    hook_result = gate(script_data, threshold=HOOK_SCORE_THRESHOLD)
     if not hook_result["pass"]:
         logger.error("Hook gate failed: %s", hook_result.get("reason"))
         sys.exit(1)
-    logger.info("Hook gate passed: score=%.2f", hook_result["score"])
+    logger.info(
+        "Hook gate passed: score=%.2f (threshold=%.2f)",
+        hook_result["score"],
+        HOOK_SCORE_THRESHOLD,
+    )
 
     # Step 5: Voiceover
     from pipeline.voiceover import generate as gen_voice

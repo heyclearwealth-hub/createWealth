@@ -19,6 +19,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -29,6 +30,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pipeline.shorts_scriptwriter import FINANCE_TOPICS, generate as generate_script
 from pipeline.shorts_renderer import OUTPUT_SHORT, render as render_short
 from pipeline.voiceover import generate_with_timestamps
+try:
+    from pipeline.thumbnail_gen import generate_thumbnails
+except Exception:
+    def generate_thumbnails(title_variants, pillar):
+        logger.warning("thumbnail_gen unavailable — skipping thumbnail generation")
+        return []
 
 logging.basicConfig(
     level=logging.INFO,
@@ -77,6 +84,30 @@ def _clean_workspace() -> None:
     SHORT_VO_PATH.unlink(missing_ok=True)
 
 
+def _normalize_tags(raw_tags) -> list[str]:
+    """
+    Convert hashtag-style values to YouTube tag strings.
+    Example: ["#Shorts", "#IndexFunds"] -> ["Shorts", "IndexFunds"]
+    """
+    cleaned: list[str] = []
+    if isinstance(raw_tags, str):
+        candidates = [raw_tags]
+    elif isinstance(raw_tags, (list, tuple, set)):
+        candidates = list(raw_tags)
+    else:
+        return cleaned
+
+    for tag in candidates:
+        value = " ".join(str(tag or "").split()).strip()
+        if not value:
+            continue
+        if value.startswith("#"):
+            value = value[1:]
+        if value and value not in cleaned:
+            cleaned.append(value[:30])
+    return cleaned[:15]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate and upload a standalone YouTube Short")
     parser.add_argument("--topic", default=None, help="Override topic (must match FINANCE_TOPICS list)")
@@ -106,10 +137,20 @@ def main() -> None:
         used_topics=_load_used_topics(),
         retention_feedback=_load_retention_feedback(),
     )
+    _vo_text = script_data.get("voiceover_script", "")
+    _word_count = len(re.findall(r"[A-Za-z0-9$%']+", re.sub(r"\[[^\]]*\]", "", _vo_text)))
     logger.info("Script generated: topic='%s' words=%d overlays=%d",
                 script_data["topic"],
-                len(script_data.get("voiceover_script", "").split()),
+                _word_count,
                 len(script_data.get("overlays", [])))
+
+    # ── 2b. Generate thumbnails for all title variants ───────────────────────
+    logger.info("Generating thumbnails for %d title variants...", len(script_data.get("title_options", [])))
+    thumb_paths = generate_thumbnails(
+        title_variants=script_data.get("title_options", []),
+        pillar=script_data.get("pillar", ""),
+    )
+    logger.info("Thumbnails ready: %d files", len(thumb_paths))
 
     # ── 3. Generate voiceover (with timestamps when available) ───────────────
     logger.info("Generating voiceover...")
@@ -117,8 +158,13 @@ def main() -> None:
         script_data["voiceover_script"],
         output_path=SHORT_VO_PATH,
     )
+    if not word_times:
+        logger.warning(
+            "Word timestamps unavailable — continuing with approximate timing fallback "
+            "(captions may be less precise)."
+        )
     script_data["word_timestamps"] = word_times
-    logger.info("Voiceover saved: %s", vo_path)
+    logger.info("Voiceover saved: %s (%d word timestamps)", vo_path, len(word_times))
 
     # ── 4. Render Short ──────────────────────────────────────────────────────
     logger.info("Rendering Short video...")
@@ -134,13 +180,12 @@ def main() -> None:
     titles = script_data.get("title_options", [script_data["topic"]])
     title = titles[0] if titles else script_data["topic"]
 
-    hashtags = " ".join(script_data.get("hashtags", ["#Shorts", "#PersonalFinance"]))
-    description = script_data.get("description", "") + f"\n\n{hashtags}"
+    description = script_data.get("description", "")
 
     upload_payload = {
         "title": title,
         "description": description,
-        "tags": script_data.get("hashtags", []),
+        "tags": _normalize_tags(script_data.get("hashtags", [])),
         "pillar": script_data.get("pillar", "investing"),
         "topic": script_data["topic"],
         "script": script_data.get("voiceover_script", ""),

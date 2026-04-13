@@ -15,8 +15,8 @@ FEEDBACK_FILE = Path("data/review_feedback.json")
 
 # Keyword → tag mapping (checked in order; first match wins)
 TAG_RULES: list[tuple[str, str]] = [
-    (r"hook|intro|opening|first.*(second|second|10|fifteen|30)\s*sec", "hook"),
-    (r"compli|disclaim|advice|claim|guarantee|mislead|mislead|promise|illegal", "compliance"),
+    (r"hook|intro|opening|first.*(second|10|fifteen|30)\s*sec", "hook"),
+    (r"compli|disclaim|advice|claim|guarantee|mislead|promise|illegal", "compliance"),
     (r"pac(e|ing)|slow|fast|too long|too short|rush|drag", "pacing"),
     (r"visual|clip|footage|b.roll|thumbnail|image|blurr|quality|resolution", "visuals"),
     (r"title|packag|variant|description|desc|thumbnail text|cta|call.to.action", "packaging"),

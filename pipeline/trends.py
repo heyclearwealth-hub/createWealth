@@ -80,7 +80,23 @@ def _load_weights() -> dict:
     if not WEIGHTS_FILE.exists():
         return {}
     with WEIGHTS_FILE.open() as f:
-        return json.load(f).get("pillars", {})
+        raw = json.load(f).get("pillars", {})
+    # Backward compatibility:
+    # - {"investing": 1.0}
+    # - {"investing": {"weight": 1.0}}
+    out: dict[str, float] = {}
+    for pillar, value in raw.items():
+        if isinstance(value, dict):
+            try:
+                out[pillar] = float(value.get("weight", 1.0))
+            except (TypeError, ValueError):
+                out[pillar] = 1.0
+        else:
+            try:
+                out[pillar] = float(value)
+            except (TypeError, ValueError):
+                out[pillar] = 1.0
+    return out
 
 
 def _is_on_cooldown(slug: str, used_topics: list[dict]) -> bool:
