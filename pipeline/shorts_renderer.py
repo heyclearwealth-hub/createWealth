@@ -1157,12 +1157,12 @@ def render(
     if bgmusic_path.exists() and music_enabled:
         audio_filter = (
             "[1:a]highpass=f=85,lowpass=f=12000,"
-            "acompressor=threshold=-17dB:ratio=2.2:attack=15:release=180:makeup=3,"
-            "volume=1.05[voice];"
+            "acompressor=threshold=-17dB:ratio=2.2:attack=15:release=180,"
+            "volume=1.05,asplit=2[voice_main][voice_sc];"
             "[2:a]volume=0.11[raw_music];"
             # Sidechain compress: voice triggers music level reduction while speaking
-            "[raw_music][voice]sidechaincompress=threshold=0.015:ratio=6:attack=5:release=200[music_ducked];"
-            "[voice][music_ducked]amix=inputs=2:duration=first[mix];"
+            "[raw_music][voice_sc]sidechaincompress=threshold=0.015:ratio=6:attack=5:release=200[music_ducked];"
+            "[voice_main][music_ducked]amix=inputs=2:duration=first[mix];"
             f"[mix]loudnorm=I={TARGET_LOUDNESS}:TP=-1.0:LRA=7[a]"
         )
         audio_inputs = ["-i", str(voiceover_path), "-i", str(bgmusic_path)]
