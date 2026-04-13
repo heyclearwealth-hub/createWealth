@@ -18,3 +18,16 @@ def test_repair_hook_opening_injects_signal_words():
     repaired = sw._repair_hook_opening(script, "hook missing pain framing in opening beat")
     assert repaired.startswith("8% lose money ")
 
+
+def test_repair_hook_opening_injects_consequence_terms():
+    script = "12% debt payoff feels good in month one but can be the slower path."
+    repaired = sw._repair_hook_opening(script, "hook missing consequence framing in opening beat")
+    ok, reason = sw.assess_hook_strength(repaired)
+    assert ok is True
+    assert reason == "ok"
+
+
+def test_trim_script_to_max_words_caps_length():
+    script = " ".join(["word"] * 160)
+    trimmed = sw._trim_script_to_max_words(script, max_words=140)
+    assert sw._word_count(trimmed) <= 140

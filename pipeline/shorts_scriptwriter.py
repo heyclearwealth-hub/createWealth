@@ -41,6 +41,7 @@ HOOK_PAIN_TERMS = {
 HOOK_CONSEQUENCE_TERMS = {
     "cost", "costs", "later", "future", "retirement", "years", "forever", "overpay",
     "wealth", "freedom", "growth", "compound", "thousands", "millions",
+    "worth", "net worth", "broke", "zero",
 }
 TITLE_POWER_TERMS = {
     "why", "how", "mistake", "truth", "secret", "stop", "before", "after", "lose", "save",
@@ -439,14 +440,29 @@ def _repair_hook_opening(script: str, reason: str) -> str:
 
     # Keep additions minimal so we don't push word count out of bounds.
     if missing_pain and missing_consequence:
-        injection = "lose money over years"
+        injection = "lose money costs later"
     elif missing_pain:
         injection = "lose money"
     else:
-        injection = "over years"
+        injection = "costs wealth later"
 
     repaired = " ".join([tokens[0], injection, *tokens[1:]])
     return repaired
+
+
+def _trim_script_to_max_words(script: str, max_words: int = MAX_WORDS) -> str:
+    """
+    Deterministic trim when LLM output exceeds max word budget.
+    Preserves the opening hook token by truncating from the tail.
+    """
+    text = str(script or "").strip()
+    if not text:
+        return text
+    if _word_count(text) <= max_words:
+        return text
+
+    tokens = re.findall(r"[A-Za-z0-9$%']+", _clean_script_text(text))
+    return " ".join(tokens[:max_words])
 
 
 def _title_score(title: str, topic: dict) -> float:
@@ -883,6 +899,15 @@ def generate(
 
         valid, reason = _is_valid_short_shape(data, topic)
         if not valid:
+            # Self-heal slight over-length scripts instead of failing the run.
+            if _word_count(data.get("voiceover_script", "")) > MAX_WORDS:
+                trimmed_script = _trim_script_to_max_words(data.get("voiceover_script", ""), MAX_WORDS)
+                if trimmed_script != data.get("voiceover_script", ""):
+                    data["voiceover_script"] = _enforce_loop_ending(trimmed_script)
+                    valid, reason = _is_valid_short_shape(data, topic)
+                    if valid:
+                        logger.info("Applied word-count trim fallback for topic '%s'", topic["topic"])
+
             repaired_script = _repair_hook_opening(data.get("voiceover_script", ""), reason)
             if repaired_script != data.get("voiceover_script", ""):
                 data["voiceover_script"] = repaired_script
