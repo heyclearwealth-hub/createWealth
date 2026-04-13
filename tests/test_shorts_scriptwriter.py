@@ -31,3 +31,16 @@ def test_trim_script_to_max_words_caps_length():
     script = " ".join(["word"] * 160)
     trimmed = sw._trim_script_to_max_words(script, max_words=140)
     assert sw._word_count(trimmed) <= 140
+
+
+def test_hook_repair_then_trim_stays_within_budget():
+    base = "9% " + " ".join(["token"] * 145)
+    repaired = sw._repair_hook_opening(base, "hook missing consequence framing in opening beat")
+    capped = sw._trim_script_to_max_words(repaired, max_words=140)
+    assert sw._word_count(capped) <= 140
+
+
+def test_repair_does_not_run_for_non_hook_reason():
+    script = "10% budget plan can improve your spending this year."
+    repaired = sw._repair_hook_opening(script, "word-count out of range (142, expected 110-140)")
+    assert repaired == script

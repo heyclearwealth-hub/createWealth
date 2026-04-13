@@ -465,6 +465,19 @@ def _trim_script_to_max_words(script: str, max_words: int = MAX_WORDS) -> str:
     return " ".join(tokens[:max_words])
 
 
+def _finalize_short_payload(data: dict, topic: dict) -> dict:
+    """Normalize and stamp common metadata for a successful short payload."""
+    data = _normalize_short_data(data, topic)
+    data["topic"] = topic["topic"]
+    data["pillar"] = topic["pillar"]
+
+    description = str(data.get("description", "")).strip()
+    if "Educational only. Not financial advice." not in description:
+        description = (description + " ⚠️ Educational only. Not financial advice.").strip()
+    data["description"] = description
+    return data
+
+
 def _title_score(title: str, topic: dict) -> float:
     cleaned = " ".join(str(title or "").split()).strip()
     if not cleaned:
@@ -895,38 +908,41 @@ def generate(
             logger.warning("Script missing (attempt %d), retrying", attempt + 1)
             continue
         data["voiceover_script"] = _enforce_loop_ending(script)
+        if _word_count(data["voiceover_script"]) > MAX_WORDS:
+            data["voiceover_script"] = _trim_script_to_max_words(data["voiceover_script"], MAX_WORDS)
         script = data["voiceover_script"]
 
         valid, reason = _is_valid_short_shape(data, topic)
         if not valid:
             # Self-heal slight over-length scripts instead of failing the run.
-            if _word_count(data.get("voiceover_script", "")) > MAX_WORDS:
+            if "word-count out of range" in reason and _word_count(data.get("voiceover_script", "")) > MAX_WORDS:
                 trimmed_script = _trim_script_to_max_words(data.get("voiceover_script", ""), MAX_WORDS)
                 if trimmed_script != data.get("voiceover_script", ""):
-                    data["voiceover_script"] = _enforce_loop_ending(trimmed_script)
+                    data["voiceover_script"] = trimmed_script
                     valid, reason = _is_valid_short_shape(data, topic)
                     if valid:
                         logger.info("Applied word-count trim fallback for topic '%s'", topic["topic"])
 
-            repaired_script = _repair_hook_opening(data.get("voiceover_script", ""), reason)
-            if repaired_script != data.get("voiceover_script", ""):
-                data["voiceover_script"] = repaired_script
-                valid, reason = _is_valid_short_shape(data, topic)
-                if valid:
-                    logger.info("Applied hook auto-repair for topic '%s'", topic["topic"])
-                else:
-                    logger.warning("Hook auto-repair attempted but still invalid: %s", reason)
+            if (
+                not valid
+                and (
+                    "hook missing pain framing" in reason
+                    or "hook missing consequence framing" in reason
+                    or "hook number not in first 3 words" in reason
+                )
+            ):
+                repaired_script = _repair_hook_opening(data.get("voiceover_script", ""), reason)
+                if repaired_script != data.get("voiceover_script", ""):
+                    if _word_count(repaired_script) > MAX_WORDS:
+                        repaired_script = _trim_script_to_max_words(repaired_script, MAX_WORDS)
+                    data["voiceover_script"] = repaired_script
+                    valid, reason = _is_valid_short_shape(data, topic)
+                    if valid:
+                        logger.info("Applied hook auto-repair for topic '%s'", topic["topic"])
+                    else:
+                        logger.warning("Hook auto-repair attempted but still invalid: %s", reason)
             if valid:
-                data = _normalize_short_data(data, topic)
-                data["topic"] = topic["topic"]
-                data["pillar"] = topic["pillar"]
-
-                # Ensure description always ends with educational disclaimer.
-                description = str(data.get("description", "")).strip()
-                if "Educational only. Not financial advice." not in description:
-                    description = (description + " ⚠️ Educational only. Not financial advice.").strip()
-                data["description"] = description
-
+                data = _finalize_short_payload(data, topic)
                 _save_short_to_memory(topic["topic"], data["voiceover_script"])
                 logger.info("Short script generated: %d words, %d overlays",
                             _word_count(data["voiceover_script"]), len(data.get("overlays", [])))
@@ -937,15 +953,7 @@ def generate(
             logger.warning("Short validation failed (attempt %d): %s", attempt + 1, reason)
             continue
 
-        data = _normalize_short_data(data, topic)
-        data["topic"] = topic["topic"]
-        data["pillar"] = topic["pillar"]
-
-        # Ensure description always ends with educational disclaimer.
-        description = str(data.get("description", "")).strip()
-        if "Educational only. Not financial advice." not in description:
-            description = (description + " ⚠️ Educational only. Not financial advice.").strip()
-        data["description"] = description
+        data = _finalize_short_payload(data, topic)
 
         _save_short_to_memory(topic["topic"], script)
         logger.info("Short script generated: %d words, %d overlays",
