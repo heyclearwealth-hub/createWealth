@@ -52,7 +52,6 @@ jobs:
           VIDEO_PRIVACY_STATUS: ${{ vars.SHORTS_PRIVACY_STATUS || 'public' }}
           DRY_RUN: ${{ github.event.inputs.dry_run || '0' }}
           PYTHONPATH: ${{ github.workspace }}
-        env:
           SHORTS_TOPIC_OVERRIDE: ${{ github.event.inputs.topic }}
         run: |
           TOPIC_ARG=()
