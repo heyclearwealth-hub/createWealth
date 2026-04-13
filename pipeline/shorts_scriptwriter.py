@@ -143,7 +143,7 @@ def _normalize_text(value: str, fallback: str) -> str:
     if not text:
         text = fallback
     if len(text) > MAX_TEXT_CHARS:
-        text = text[: MAX_TEXT_CHARS - 3].rstrip() + "..."
+        text = text[: MAX_TEXT_CHARS - 3].rsplit(" ", 1)[0].rstrip() + "..."
     return text
 
 
@@ -246,12 +246,24 @@ def _ensure_overlay_density(overlays: list[dict], script: str, topic: dict) -> l
         needed = MIN_OVERLAYS - len(normalized)
         step = max(7, words // (needed + 2))
         for i in range(needed):
-            start_word = min(words - 2, step * (i + 1))
+            candidate = min(words - 2, step * (i + 1))
+            # Nudge forward past any occupied overlay window before placing.
+            while candidate < words - 1 and any(
+                ov["start_word"] <= candidate < ov["start_word"] + int(ov["duration_s"] * WPS)
+                for ov in normalized
+            ):
+                candidate += 1
+            # Skip if still occupied — no free window exists in this script.
+            if any(
+                ov["start_word"] <= candidate < ov["start_word"] + int(ov["duration_s"] * WPS)
+                for ov in normalized
+            ):
+                continue
             normalized.append(
                 {
                     "type": "label",
                     "text": filler_labels[i % len(filler_labels)],
-                    "start_word": start_word,
+                    "start_word": candidate,
                     "duration_s": 2.0,
                 }
             )

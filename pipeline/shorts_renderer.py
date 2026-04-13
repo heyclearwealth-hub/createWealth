@@ -13,7 +13,9 @@ import logging
 import math
 import os
 import re
+import shutil
 import subprocess
+from functools import lru_cache
 from pathlib import Path
 
 from pipeline.renderer import _bin
@@ -47,6 +49,7 @@ BACKGROUNDS = [
 # Font helpers
 # ---------------------------------------------------------------------------
 
+@lru_cache(maxsize=64)
 def _get_font(size: int):
     from PIL import ImageFont
     candidates = [
@@ -165,16 +168,10 @@ def _draw_multiline_centered(
 def _make_gradient_background(color_top: tuple, color_bottom: tuple,
                                w: int = SHORT_W, h: int = SHORT_H):
     from PIL import Image
-    img = Image.new("RGB", (w, h))
-    pixels = img.load()
-    for y in range(h):
-        t = y / h
-        r = int(color_top[0] + (color_bottom[0] - color_top[0]) * t)
-        g = int(color_top[1] + (color_bottom[1] - color_top[1]) * t)
-        b = int(color_top[2] + (color_bottom[2] - color_top[2]) * t)
-        for x in range(w):
-            pixels[x, y] = (r, g, b)
-    return img
+    img = Image.new("RGB", (1, 2))
+    img.putpixel((0, 0), color_top)
+    img.putpixel((0, 1), color_bottom)
+    return img.resize((w, h), Image.BILINEAR)
 
 
 def _make_background_image(pillar: str = "investing"):
@@ -209,14 +206,8 @@ def _make_background_image(pillar: str = "investing"):
 # Pexels background video
 # ---------------------------------------------------------------------------
 
-# One search query per pillar — kept short and visual for Pexels
-PILLAR_BG_QUERIES = {
-    "investing":    ["stock market charts trading", "money financial growth"],
-    "budgeting":    ["budget planning calculator desk", "personal finance saving money"],
-    "debt":         ["credit card bills financial stress", "debt payoff money"],
-    "tax":          ["tax documents laptop accountant", "financial planning paperwork"],
-    "career_income": ["professional career office success", "salary raise income"],
-}
+# Single source of truth for pillar → Pexels search queries (shared with footage.py).
+from pipeline.footage import PILLAR_VISUAL_QUERIES as PILLAR_BG_QUERIES
 
 
 def _fetch_pexels_clip(pillar: str, work_dir: Path) -> Path | None:
@@ -277,7 +268,7 @@ def _fetch_pexels_clip(pillar: str, work_dir: Path) -> Path | None:
 def _prepare_bg_video(raw_clip: Path, work_dir: Path, duration: float) -> Path:
     """
     Crop to 9:16, darken, loop/trim to `duration`. Returns processed video path.
-    The heavy darkening (brightness=-0.40) ensures text stays legible over any footage.
+    The darkening (brightness=-0.25) ensures text stays legible over any footage.
     """
     out = work_dir / "bg_processed.mp4"
     vf = (
@@ -360,7 +351,16 @@ def _build_background_frame(
 # Overlay card renderers
 # ---------------------------------------------------------------------------
 
-def _make_overlay_image(overlay: dict, w: int = SHORT_W, h: int = SHORT_H):
+def _label_card_height(text: str, w: int = SHORT_W) -> int:
+    """Return the pixel height of the card that _make_overlay_image would render for a label."""
+    from PIL import Image, ImageDraw
+    draw = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+    lines, font = _wrap_fit_lines(draw, text, max_width=int(w * 0.78), start_size=66, min_size=34, max_lines=2)
+    block_h = sum(_text_height(draw, ln, font) for ln in lines) + 8 * max(0, len(lines) - 1)
+    return block_h + 18 * 2  # pad = 18
+
+
+def _make_overlay_image(overlay: dict, w: int = SHORT_W, h: int = SHORT_H, label_y0: int | None = None):
     """Render one overlay dict to a transparent RGBA PIL Image."""
     from PIL import Image, ImageDraw
 
@@ -403,7 +403,7 @@ def _make_overlay_image(overlay: dict, w: int = SHORT_W, h: int = SHORT_H):
         lines, font = _wrap_fit_lines(draw, text, max_width=int(w * 0.78), start_size=66, min_size=34, max_lines=2)
         block_h = sum(_text_height(draw, ln, font) for ln in lines) + 8 * max(0, len(lines) - 1)
         pad = 18
-        y0 = int(h * 0.72)
+        y0 = label_y0 if label_y0 is not None else int(h * 0.72)
         card_w = int(w * 0.82)
         x0 = (w - card_w) // 2
         draw.rounded_rectangle(
@@ -675,8 +675,13 @@ def render(
         active = [ov for ov in overlays if _ov_start(ov) <= t_mid < _ov_end(ov)]
 
         frame = _build_background_frame(t_mid, bg_img, bg_frames)
+        label_next_y = int(SHORT_H * 0.72)
         for ov in active:
-            frame = Image.alpha_composite(frame, _make_overlay_image(ov))
+            if ov.get("type") == "label":
+                frame = Image.alpha_composite(frame, _make_overlay_image(ov, label_y0=label_next_y))
+                label_next_y += _label_card_height(_clean_text(ov.get("text", "")).upper()) + 8
+            else:
+                frame = Image.alpha_composite(frame, _make_overlay_image(ov))
 
         seg_path = seg_dir / f"seg_{i:03d}.png"
         frame.convert("RGB").save(seg_path)
@@ -725,9 +730,13 @@ def render(
     ]
 
     logger.info("Encoding Short (%d segments, %d overlays)...", len(events_sorted) - 1, len(overlays))
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-    if result.returncode != 0:
-        raise RuntimeError(f"Short render failed:\n{result.stderr[-1000:]}")
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        if result.returncode != 0:
+            raise RuntimeError(f"Short render failed:\n{result.stderr[-1000:]}")
+    finally:
+        shutil.rmtree(seg_dir, ignore_errors=True)
+        logger.debug("Cleaned up segment frames: %s", seg_dir)
 
     if not output_path.exists() or output_path.stat().st_size < 50_000:
         raise RuntimeError(f"Short output missing or too small: {output_path}")
