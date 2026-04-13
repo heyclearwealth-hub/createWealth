@@ -1,8 +1,9 @@
 """
 run_shorts_original.py — Entrypoint for standalone Shorts generation.
 
-Generates a text-animation style YouTube Short (45–55s) on a finance topic.
-No B-roll footage needed — uses gradient background + text overlays only.
+Generates a YouTube Short (45–55s) on a finance topic.
+Uses a Pexels video background (darkened, brand-blended) when PEXELS_API_KEY is set,
+falling back to a static gradient background if the key is absent or the download fails.
 
 Usage:
   python scripts/run_shorts_original.py                  # auto-pick topic

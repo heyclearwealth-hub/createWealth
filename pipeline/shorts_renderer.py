@@ -474,36 +474,44 @@ def _sanitize_overlays(overlays: list, duration_s: float) -> list[dict]:
 
 def _inject_cadence_labels(overlays: list, vo_duration: float) -> list[dict]:
     """
-    Insert label cards into gaps that exceed MAX_VISUAL_GAP_S.
+    Insert label cards until no gap exceeds MAX_VISUAL_GAP_S.
 
-    The gap timeline is built from actual overlay start/end times only —
-    NOT from synthetic time-grid events — so gaps are correctly identified
-    before any filler is added.
+    Iterates until every gap is covered: a single pass only bisects each
+    original gap once, but a long gap (e.g. 10s) needs multiple bisections
+    to stay under the 2s threshold. The loop re-scans after each insertion.
     """
-    # Collect the timeline boundaries from existing overlays
-    bounds: set[float] = {0.0, vo_duration}
-    for ov in overlays:
-        s, e = _ov_start(ov), _ov_end(ov)
-        if 0 < s < vo_duration:
-            bounds.add(s)
-        if 0 < e < vo_duration:
-            bounds.add(e)
-    timeline = sorted(bounds)
-
     cadence_labels = ["REAL EXAMPLE", "SIMPLE MATH", "THIS IS KEY", "TIME MATTERS"]
     injected = list(overlays)
     label_idx = 0
-    for i in range(len(timeline) - 1):
-        gap = timeline[i + 1] - timeline[i]
-        if gap > MAX_VISUAL_GAP_S:
-            midpoint = timeline[i] + gap / 2.0
-            injected.append({
-                "type": "label",
-                "text": cadence_labels[label_idx % len(cadence_labels)],
-                "start_word": int(midpoint * WPS),
-                "duration_s": min(2.1, gap - 0.2),
-            })
-            label_idx += 1
+
+    for _ in range(200):   # hard cap — prevents infinite loops on degenerate input
+        # Rebuild bounds from current injected list each iteration
+        bounds: set[float] = {0.0, vo_duration}
+        for ov in injected:
+            s, e = _ov_start(ov), _ov_end(ov)
+            if 0 < s < vo_duration:
+                bounds.add(s)
+            if 0 < e < vo_duration:
+                bounds.add(e)
+        timeline = sorted(bounds)
+
+        filled = True
+        for i in range(len(timeline) - 1):
+            gap = timeline[i + 1] - timeline[i]
+            if gap > MAX_VISUAL_GAP_S:
+                midpoint = timeline[i] + gap / 2.0
+                injected.append({
+                    "type": "label",
+                    "text": cadence_labels[label_idx % len(cadence_labels)],
+                    "start_word": int(midpoint * WPS),
+                    "duration_s": min(2.1, gap - 0.2),
+                })
+                label_idx += 1
+                filled = False
+                break   # restart scan with updated timeline
+
+        if filled:
+            break
 
     return injected
 

@@ -45,24 +45,27 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
           YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
           YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
           YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
           VIDEO_PRIVACY_STATUS: ${{ vars.SHORTS_PRIVACY_STATUS || 'public' }}
           DRY_RUN: ${{ github.event.inputs.dry_run || '0' }}
           PYTHONPATH: ${{ github.workspace }}
+        env:
+          SHORTS_TOPIC_OVERRIDE: ${{ github.event.inputs.topic }}
         run: |
-          TOPIC_ARG=""
-          if [ -n "${{ github.event.inputs.topic }}" ]; then
-            TOPIC_ARG="--topic \"${{ github.event.inputs.topic }}\""
+          TOPIC_ARG=()
+          if [ -n "$SHORTS_TOPIC_OVERRIDE" ]; then
+            TOPIC_ARG=(--topic "$SHORTS_TOPIC_OVERRIDE")
           fi
 
-          DRY_RUN_FLAG=""
+          DRY_RUN_FLAG=()
           if [ "$DRY_RUN" = "1" ]; then
-            DRY_RUN_FLAG="--dry-run"
+            DRY_RUN_FLAG=(--dry-run)
           fi
 
-          python scripts/run_shorts_original.py $TOPIC_ARG $DRY_RUN_FLAG
+          python scripts/run_shorts_original.py "${TOPIC_ARG[@]}" "${DRY_RUN_FLAG[@]}"
 
       - name: Upload Short artifact
         if: always()
