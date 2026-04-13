@@ -27,9 +27,23 @@ MAX_SHORTS_MEMORY = 10
 WPS = 2.5  # words per second at voiceover pace
 MIN_WORDS = 110
 MAX_WORDS = 140
-MIN_OVERLAYS = 8
-MAX_OVERLAYS = 12
+MIN_OVERLAYS = 6
+MAX_OVERLAYS = 10
 MAX_TEXT_CHARS = 34
+MIN_TITLE_OPTIONS = 5
+MAX_TITLE_OPTIONS = 10
+
+HOOK_PAIN_TERMS = {
+    "lose", "loss", "waste", "wasted", "miss", "missing", "debt", "trap", "mistake",
+    "expensive", "costly", "behind", "penalty", "stuck",
+}
+HOOK_CONSEQUENCE_TERMS = {
+    "cost", "costs", "later", "future", "retirement", "years", "forever", "overpay",
+    "wealth", "freedom", "growth", "compound", "thousands", "millions",
+}
+TITLE_POWER_TERMS = {
+    "why", "how", "mistake", "truth", "secret", "stop", "before", "after", "lose", "save",
+}
 
 OVERLAY_TYPES = {"hook_number", "label", "comparison", "cta"}
 DEFAULT_DURATIONS = {
@@ -147,6 +161,166 @@ def _normalize_text(value: str, fallback: str) -> str:
     return text
 
 
+def _normalize_label_text(value: str, fallback: str = "THIS IS KEY") -> str:
+    """
+    Labels should stay punchy (2-5 words) and never trail with ellipses.
+    """
+    raw = " ".join(str(value or "").split()).strip().upper()
+    words = re.findall(r"[A-Z0-9$%]+", raw)
+    if not words:
+        words = fallback.split()
+    if len(words) < 2:
+        words.append("NOW")
+    return " ".join(words[:5])
+
+
+def _default_stat_citations(topic: dict) -> list[str]:
+    pillar = str(topic.get("pillar", "")).strip()
+    defaults = {
+        "investing": "SPIVA U.S. Scorecard 2025",
+        "budgeting": "Federal Reserve SHED 2025",
+        "debt": "Federal Reserve G.19 Consumer Credit",
+        "tax": "IRS Publication 17",
+        "career_income": "BLS Employment Cost Index",
+    }
+    return [defaults.get(pillar, "Federal Reserve Economic Data")]
+
+
+def _normalize_stat_citations(raw, topic: dict) -> list[str]:
+    out: list[str] = []
+    for item in (raw or []):
+        text = " ".join(str(item or "").split()).strip()
+        if 4 <= len(text) <= 90 and text not in out:
+            out.append(text)
+    if not out:
+        out = _default_stat_citations(topic)
+    return out[:2]
+
+
+def _split_sentences(script: str) -> list[str]:
+    cleaned = " ".join(str(script or "").split()).strip()
+    if not cleaned:
+        return []
+    return [s.strip() for s in re.split(r"(?<=[.!?])\s+", cleaned) if s.strip()]
+
+
+def _loop_ending_line(script: str) -> str:
+    first_number = _extract_first_number(script)
+    return f"Save this, and if {first_number} surprised you, replay the first 3 seconds."
+
+
+def _enforce_loop_ending(script: str) -> str:
+    """
+    Professional Shorts benefit from an ending that references the opening hook.
+    """
+    sentences = _split_sentences(script)
+    if not sentences:
+        return script
+    loop_line = _loop_ending_line(script)
+    last = sentences[-1].lower()
+    if "follow" in last or "save this" in last:
+        sentences[-1] = loop_line
+    else:
+        sentences.append(loop_line)
+    return " ".join(sentences)
+
+
+def assess_hook_strength(script: str) -> tuple[bool, str]:
+    """
+    Hook quality gate: first beat should include number + pain + consequence framing.
+    """
+    tokens = re.findall(r"[A-Za-z0-9$%']+", _clean_script_text(script))
+    hook_tokens = tokens[:14]
+    hook_text = " ".join(hook_tokens).lower()
+    has_number = any(re.search(r"\d", t) for t in hook_tokens)
+    has_pain = any(term in hook_text for term in HOOK_PAIN_TERMS)
+    has_consequence = any(term in hook_text for term in HOOK_CONSEQUENCE_TERMS)
+
+    if not has_number:
+        return False, "hook missing number in opening beat"
+    if not has_pain:
+        return False, "hook missing pain framing in opening beat"
+    if not has_consequence:
+        return False, "hook missing consequence framing in opening beat"
+    return True, "ok"
+
+
+def _title_score(title: str, topic: dict) -> float:
+    cleaned = " ".join(str(title or "").split()).strip()
+    if not cleaned:
+        return -999.0
+    lower = cleaned.lower()
+    score = 0.0
+    length = len(cleaned)
+
+    if 42 <= length <= 60:
+        score += 2.2
+    elif 32 <= length <= 68:
+        score += 1.0
+    else:
+        score -= 1.0
+
+    if re.search(r"[\d$%]", cleaned):
+        score += 2.0
+    if any(term in lower for term in TITLE_POWER_TERMS):
+        score += 1.2
+    if any(tok in lower for tok in str(topic.get("topic", "")).lower().split()[:2]):
+        score += 0.8
+    if "?" in cleaned:
+        score += 0.4
+    if cleaned.isupper():
+        score -= 0.8
+    if "guaranteed" in lower or "get rich" in lower:
+        score -= 3.0
+    return score
+
+
+def _normalize_title_options(raw_titles, topic: dict, script: str) -> tuple[list[str], list[dict]]:
+    titles: list[str] = []
+    for t in (raw_titles or []):
+        candidate = " ".join(str(t or "").split()).strip()
+        if candidate and candidate not in titles:
+            titles.append(candidate)
+
+    first_num = _extract_first_number(script)
+    base_topic = str(topic.get("topic", "money")).title()
+    fallbacks = [
+        f"{first_num} Mistake Most People Make With {base_topic}",
+        f"Why {base_topic} Feels Hard (And the Simple Fix)",
+        f"Stop Losing Money on {base_topic}: 1 Rule",
+        f"How to Use {base_topic} Without Guessing",
+        f"The Boring {base_topic} Move That Wins Long-Term",
+    ]
+    for fb in fallbacks:
+        if fb not in titles:
+            titles.append(fb)
+        if len(titles) >= MIN_TITLE_OPTIONS:
+            break
+
+    scored = [{"title": t, "score": round(_title_score(t, topic), 3)} for t in titles[:MAX_TITLE_OPTIONS]]
+    scored.sort(key=lambda item: item["score"], reverse=True)
+    ranked = [item["title"] for item in scored]
+    return ranked, scored
+
+
+def _retention_prompt_block(retention_feedback: dict | None) -> str:
+    if not retention_feedback:
+        return ""
+    dropoffs = retention_feedback.get("dropoff_seconds") or []
+    notes = " ".join(str(retention_feedback.get("notes", "")).split()).strip()
+    parts: list[str] = []
+    if dropoffs:
+        stamp_text = ", ".join(f"{float(s):.0f}s" for s in dropoffs[:5])
+        parts.append(
+            f"- Retention dips have appeared around {stamp_text}; add novelty or a new number before those beats."
+        )
+    if notes:
+        parts.append(f"- Recent retention notes: {notes}")
+    if not parts:
+        return ""
+    return "\nRETENTION FEEDBACK (use this to improve watch-through):\n" + "\n".join(parts) + "\n"
+
+
 def _coerce_start_word(value, max_words: int, default: int = 0) -> int:
     try:
         parsed = int(value)
@@ -184,12 +358,13 @@ def _normalize_overlay(overlay: dict, word_count: int) -> dict | None:
         if subtitle:
             normalized["subtitle"] = subtitle
     elif kind == "label":
-        normalized["text"] = _normalize_text((overlay or {}).get("text"), "THIS IS IMPORTANT")
+        normalized["text"] = _normalize_label_text((overlay or {}).get("text"), "THIS IS KEY")
     elif kind == "comparison":
         normalized["left"] = _normalize_text((overlay or {}).get("left"), "Before")
         normalized["right"] = _normalize_text((overlay or {}).get("right"), "After")
     else:  # cta
-        normalized["text"] = _normalize_text((overlay or {}).get("text"), "Follow for more money tips")
+        cta = " ".join(str((overlay or {}).get("text", "")).split()).strip()
+        normalized["text"] = cta or "Save this and follow for more"
 
     return normalized
 
@@ -290,11 +465,15 @@ def _ensure_overlay_density(overlays: list[dict], script: str, topic: dict) -> l
 def _normalize_short_data(data: dict, topic: dict) -> dict:
     """Return a new dict with overlays and title_options normalised. Does not mutate data."""
     script = data.get("voiceover_script", "")
-    titles = data.get("title_options", [])
+    ranked_titles, scored_titles = _normalize_title_options(data.get("title_options", []), topic, script)
+    stat_citations = _normalize_stat_citations(data.get("stat_citations", []), topic)
     return {
         **data,
         "overlays": _ensure_overlay_density(data.get("overlays", []), script, topic),
-        "title_options": [str(t).strip() for t in titles[:3]],
+        "title_options": ranked_titles,
+        "title_scores": scored_titles,
+        "selected_title": ranked_titles[0] if ranked_titles else str(topic.get("topic", "")).strip(),
+        "stat_citations": stat_citations,
     }
 
 
@@ -310,8 +489,12 @@ def _is_valid_short_shape(data: dict, topic: dict) -> tuple[bool, str]:
         return False, "hook does not start with a numeric token"
 
     titles = data.get("title_options", [])
-    if not isinstance(titles, list) or len(titles) < 3:
+    if not isinstance(titles, list) or len(titles) < MIN_TITLE_OPTIONS:
         return False, "missing title_options variants"
+
+    hook_ok, hook_reason = assess_hook_strength(script)
+    if not hook_ok:
+        return False, hook_reason
 
     # Check raw Claude output — _ensure_overlay_density is called later in _normalize_short_data.
     # We only fail here if Claude returned almost nothing, so normalization has too little to work with.
@@ -325,28 +508,30 @@ def _is_valid_short_shape(data: dict, topic: dict) -> tuple[bool, str]:
     return True, "ok"
 
 
-def _build_prompt(topic: dict, feedback: str = "") -> str:
+def _build_prompt(topic: dict, feedback: str = "", retention_feedback: dict | None = None) -> str:
     feedback_block = (
         f"\n⚠️  PREVIOUS ATTEMPT REJECTED — {feedback}"
         f"\nYou MUST fix this before responding.\n"
         if feedback else ""
     )
+    retention_block = _retention_prompt_block(retention_feedback)
     return f"""You are writing a YouTube Shorts script for a personal finance channel called ClearWealth.
 {feedback_block}
 TOPIC: {topic["topic"]}
 ANGLE: {topic["angle"]}
 PILLAR: {topic["pillar"]}
+{retention_block}
 
 FORMAT RULES:
 - Total voiceover: 45–55 seconds (MINIMUM 110 words, TARGET 120–130 words, MAXIMUM 140 words at 2.5 words/sec)
 - Count your words before finalising — scripts under 110 words will be rejected
 - The VERY FIRST spoken token must contain a number or dollar amount
-- Hook must be spoken in under 0.5s and include a consequence (loss/gain)
+- The first 1.2 seconds must include: (1) number, (2) pain/problem, (3) consequence if ignored
 - Use this 3-beat flow only: SHOCK NUMBER -> SIMPLE MATH PROOF -> ACTION STEP
 - Uses simple language — explain like the viewer is smart but has never heard this before
 - One concrete worked example with real dollar amounts and specific numbers
 - Emotional arc: hook with urgency → simple explanation → empowering takeaway
-- Ends with direct CTA: "Follow for more" or "Save this" — 1 sentence max
+- Ends with loop-style CTA that references the opening hook so viewers rewatch
 - No earnings guarantees, no "you will make X", educational only
 - Include one [PAUSE] after the hook number for impact
 
@@ -355,7 +540,8 @@ OVERLAY RULES:
 - start_word: 0-indexed position of spoken word in voiceover (count only real words — do NOT count [PAUSE] markers)
 - duration_s: how long it stays on screen
 - types: "hook_number" (big stat, 4s), "label" (short phrase, 2.5s), "comparison" (before/after side by side, 4s), "cta" (final call to action, 5s)
-- Plan 8–12 overlays total.
+- Plan 6–10 overlays total.
+- Label overlays must be concise: 2–5 words, no ellipses.
 - Every key number must have an overlay.
 - There must be no dead visual gap longer than 2.5s.
 
@@ -364,7 +550,12 @@ Return ONLY this JSON, no explanation:
   "title_options": [
     "<title option 1, max 60 chars, starts with number or power word>",
     "<title option 2>",
-    "<title option 3>"
+    "<title option 3>",
+    "<title option 4>",
+    "<title option 5>",
+    "<title option 6>",
+    "<title option 7>",
+    "<title option 8>"
   ],
   "voiceover_script": "<full spoken script, 110–140 words, with [PAUSE] markers. First word must be a number or shocking fact.>",
   "overlays": [
@@ -373,12 +564,17 @@ Return ONLY this JSON, no explanation:
     {{"type": "comparison", "left": "<before>", "right": "<after>", "start_word": 60, "duration_s": 4.0}},
     {{"type": "cta", "text": "Follow for more money tips", "start_word": 120, "duration_s": 5.0}}
   ],
+  "stat_citations": ["<short source label 1>", "<short source label 2 optional>"],
   "description": "<2-3 sentence YouTube description. End with: '⚠️ Educational only. Not financial advice.'> #Shorts",
   "hashtags": ["#Shorts", "#PersonalFinance", "#MoneyTips", "<2 more relevant tags>"]
 }}"""
 
 
-def generate(topic: dict | None = None, used_topics: list[str] | None = None) -> dict:
+def generate(
+    topic: dict | None = None,
+    used_topics: list[str] | None = None,
+    retention_feedback: dict | None = None,
+) -> dict:
     """
     Generate a standalone Short script.
     Returns the script data dict.
@@ -396,7 +592,10 @@ def generate(topic: dict | None = None, used_topics: list[str] | None = None) ->
     for attempt in range(3):
         try:
             temperature = 0.8 + attempt * 0.1
-            raw = _call_claude(_build_prompt(topic, feedback=last_failure), temperature=temperature)
+            raw = _call_claude(
+                _build_prompt(topic, feedback=last_failure, retention_feedback=retention_feedback),
+                temperature=temperature,
+            )
             data = _extract_json(raw)
         except Exception as exc:
             if attempt == 2:
@@ -412,6 +611,8 @@ def generate(topic: dict | None = None, used_topics: list[str] | None = None) ->
             last_failure = "voiceover_script was empty"
             logger.warning("Script missing (attempt %d), retrying", attempt + 1)
             continue
+        data["voiceover_script"] = _enforce_loop_ending(script)
+        script = data["voiceover_script"]
 
         valid, reason = _is_valid_short_shape(data, topic)
         if not valid:

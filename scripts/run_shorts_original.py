@@ -39,6 +39,7 @@ logger = logging.getLogger("__main__")
 WORKSPACE = Path("workspace")
 SHORT_VO_PATH = WORKSPACE / "short_voiceover.mp3"
 USED_TOPICS_FILE = Path("data/short_topics_used.json")
+RETENTION_FEEDBACK_FILE = Path("data/retention_feedback.json")
 
 
 def _load_used_topics() -> list[str]:
@@ -57,6 +58,16 @@ def _save_used_topic(topic: str) -> None:
     USED_TOPICS_FILE.parent.mkdir(parents=True, exist_ok=True)
     with USED_TOPICS_FILE.open("w") as f:
         json.dump({"topics": used}, f)
+
+
+def _load_retention_feedback() -> dict | None:
+    if not RETENTION_FEEDBACK_FILE.exists():
+        return None
+    try:
+        with RETENTION_FEEDBACK_FILE.open() as f:
+            return json.load(f)
+    except Exception:
+        return None
 
 
 def _clean_workspace() -> None:
@@ -86,7 +97,6 @@ def main() -> None:
             {"topic": args.topic, "pillar": "investing", "angle": args.topic},
         )
     else:
-        used = _load_used_topics()
         topic_match = None  # shorts_scriptwriter will pick automatically
 
     # ── 2. Generate script ───────────────────────────────────────────────────
@@ -94,6 +104,7 @@ def main() -> None:
     script_data = generate_script(
         topic=topic_match,
         used_topics=_load_used_topics(),
+        retention_feedback=_load_retention_feedback(),
     )
     logger.info("Script generated: topic='%s' words=%d overlays=%d",
                 script_data["topic"],

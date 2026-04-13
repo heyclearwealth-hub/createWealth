@@ -12,6 +12,7 @@ import json
 import logging
 import math
 import os
+import random
 import re
 import shutil
 import subprocess
@@ -35,6 +36,13 @@ MAX_LINE_CHARS = 20     # fallback char-wrap width (word-boundary fallback only)
 TARGET_LOUDNESS = -16.0
 BG_FRAME_FPS = 6.0      # background frame extraction rate (higher = smoother motion)
 BG_CADENCE_S = 0.5      # background refresh cadence for segment generation
+BG_MIN_CUT_S = 1.5
+BG_MAX_CUT_S = 3.0
+BG_ABS_MAX_SHOT_S = 4.0
+BG_TARGET_CLIPS = 4
+
+CAPTION_WINDOW_WORDS = 7
+MAX_CONCURRENT_LABELS = 1
 
 BACKGROUNDS = [
     [(15, 15, 25), (30, 30, 60)],    # deep navy  (investing)
@@ -161,6 +169,102 @@ def _draw_multiline_centered(
     return current_y
 
 
+def _spoken_words(script_text: str) -> list[str]:
+    return re.findall(r"[A-Za-z0-9$%']+", str(script_text or ""))
+
+
+def _active_word_idx(word_timestamps: list[float], t: float) -> int | None:
+    if not word_timestamps:
+        return None
+    idx = None
+    for i, start in enumerate(word_timestamps):
+        if start <= t:
+            idx = i
+        else:
+            break
+    return idx
+
+
+def _caption_slice(words: list[str], active_idx: int, window: int = CAPTION_WINDOW_WORDS) -> list[tuple[str, int]]:
+    if not words or active_idx < 0:
+        return []
+    start = max(0, active_idx - 2)
+    end = min(len(words), start + window)
+    if end - start < min(4, len(words)):
+        start = max(0, end - window)
+    return [(words[i], i) for i in range(start, end)]
+
+
+def _make_spoken_caption_image(
+    words: list[str],
+    word_timestamps: list[float],
+    t_mid: float,
+    w: int = SHORT_W,
+    h: int = SHORT_H,
+):
+    """
+    Word-synced caption strip. Highlights the active spoken word.
+    """
+    from PIL import Image, ImageDraw
+
+    if not words or not word_timestamps:
+        return Image.new("RGBA", (w, h), (0, 0, 0, 0))
+
+    active_idx = _active_word_idx(word_timestamps, t_mid)
+    if active_idx is None:
+        return Image.new("RGBA", (w, h), (0, 0, 0, 0))
+
+    token_slice = _caption_slice(words, active_idx)
+    if not token_slice:
+        return Image.new("RGBA", (w, h), (0, 0, 0, 0))
+
+    img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    font = _get_font(50)
+    max_width = int(w * 0.88)
+    space_w = _text_width(draw, " ", font)
+
+    lines: list[list[tuple[str, int]]] = [[]]
+    current_w = 0
+    for word, idx in token_slice:
+        ww = _text_width(draw, word, font)
+        add_w = ww if not lines[-1] else ww + space_w
+        if lines[-1] and current_w + add_w > max_width and len(lines) < 2:
+            lines.append([])
+            current_w = 0
+            add_w = ww
+        if len(lines) == 2 and current_w + add_w > max_width:
+            break
+        lines[-1].append((word, idx))
+        current_w += add_w
+
+    line_h = _text_height(draw, "Ag", font)
+    total_h = len(lines) * line_h + (len(lines) - 1) * 12
+    y0 = int(h * 0.79)
+    box_pad_x = 26
+    box_pad_y = 18
+    draw.rounded_rectangle(
+        [(int(w * 0.06), y0 - box_pad_y), (int(w * 0.94), y0 + total_h + box_pad_y)],
+        radius=18,
+        fill=(0, 0, 0, 170),
+    )
+
+    y = y0
+    for line in lines:
+        line_text = " ".join(wd for wd, _ in line)
+        line_w = _text_width(draw, line_text, font)
+        x = (w - line_w) // 2
+        for i, (word, idx) in enumerate(line):
+            if i > 0:
+                x += space_w
+            fill = (255, 220, 50, 255) if idx == active_idx else (255, 255, 255, 245)
+            draw.text((x + 2, y + 2), word, font=font, fill=(0, 0, 0, 200))
+            draw.text((x, y), word, font=font, fill=fill)
+            x += _text_width(draw, word, font)
+        y += line_h + 12
+    return img
+
+
 # ---------------------------------------------------------------------------
 # Background
 # ---------------------------------------------------------------------------
@@ -187,7 +291,7 @@ def _make_background_image(pillar: str = "investing"):
     colors = palette_map.get(pillar, BACKGROUNDS[0])
     bg = _make_gradient_background(colors[0], colors[1]).convert("RGBA")
     draw = ImageDraw.Draw(bg)
-    font = _get_font(44)
+    font = _get_font(46)
     wm_text = "ClearWealth"
     wm_w = _text_width(draw, wm_text, font)
     wm_x = (SHORT_W - wm_w) // 2
@@ -195,10 +299,10 @@ def _make_background_image(pillar: str = "investing"):
     # Dark backing rect improves legibility on any background
     pad = 8
     draw.rounded_rectangle(
-        [(wm_x - pad, wm_y - pad // 2), (wm_x + wm_w + pad, wm_y + 44 + pad // 2)],
-        radius=8, fill=(0, 0, 0, 80),
+        [(wm_x - pad, wm_y - pad // 2), (wm_x + wm_w + pad, wm_y + 46 + pad // 2)],
+        radius=8, fill=(0, 0, 0, 108),
     )
-    draw.text((wm_x, wm_y), wm_text, font=font, fill=(255, 255, 255, 140))
+    draw.text((wm_x, wm_y), wm_text, font=font, fill=(255, 255, 255, 180))
     return bg
 
 
@@ -210,26 +314,30 @@ def _make_background_image(pillar: str = "investing"):
 from pipeline.footage import PILLAR_VISUAL_QUERIES as PILLAR_BG_QUERIES
 
 
-def _fetch_pexels_clip(pillar: str, work_dir: Path) -> Path | None:
+def _fetch_pexels_clips(pillar: str, work_dir: Path, target_count: int = BG_TARGET_CLIPS) -> list[Path]:
     """
-    Download one Pexels video clip relevant to the pillar.
-    Returns the raw downloaded path, or None if unavailable.
+    Download several Pexels clips for montage pacing.
+    Returns zero or more raw clip paths.
     """
     import requests
 
     api_key = os.environ.get("PEXELS_API_KEY", "")
     if not api_key:
-        return None
+        return []
 
     queries = PILLAR_BG_QUERIES.get(pillar, PILLAR_BG_QUERIES["investing"])
     headers = {"Authorization": api_key}
+    clips: list[Path] = []
+    seen_links: set[str] = set()
 
     for query in queries:
+        if len(clips) >= target_count:
+            break
         try:
             resp = requests.get(
                 "https://api.pexels.com/videos/search",
                 headers=headers,
-                params={"query": query, "per_page": 10, "orientation": "portrait", "size": "medium"},
+                params={"query": query, "per_page": 15, "orientation": "portrait", "size": "medium"},
                 timeout=20,
             )
             resp.raise_for_status()
@@ -246,31 +354,46 @@ def _fetch_pexels_clip(pillar: str, work_dir: Path) -> Path | None:
             )
             if not chosen:
                 continue
-            dest = work_dir / "bg_raw.mp4"
+            link = str(chosen.get("link", "")).strip()
+            if not link or link in seen_links:
+                continue
+            seen_links.add(link)
+
+            dest = work_dir / f"bg_raw_{len(clips):02d}.mp4"
             try:
-                dl = requests.get(chosen["link"], stream=True, timeout=60)
+                dl = requests.get(link, stream=True, timeout=60)
                 dl.raise_for_status()
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 with dest.open("wb") as fh:
                     for chunk in dl.iter_content(65536):
                         if chunk:
                             fh.write(chunk)
-                logger.info("Downloaded Pexels bg clip: %s (query=%s)", dest, query)
-                return dest
+                clips.append(dest)
+                logger.info("Downloaded Pexels bg clip %d/%d: %s (query=%s)", len(clips), target_count, dest, query)
+                if len(clips) >= target_count:
+                    break
             except Exception as exc:
                 logger.warning("Pexels download failed: %s", exc)
                 if dest.exists():
                     dest.unlink()
 
-    return None
+    return clips
 
 
-def _prepare_bg_video(raw_clip: Path, work_dir: Path, duration: float) -> Path:
+def _fetch_pexels_clip(pillar: str, work_dir: Path) -> Path | None:
+    """
+    Backward-compatible single-clip helper.
+    """
+    clips = _fetch_pexels_clips(pillar, work_dir, target_count=1)
+    return clips[0] if clips else None
+
+
+def _prepare_bg_video(raw_clip: Path, work_dir: Path, duration: float, tag: str = "0") -> Path:
     """
     Crop to 9:16, darken, loop/trim to `duration`. Returns processed video path.
     The darkening (brightness=-0.25) ensures text stays legible over any footage.
     """
-    out = work_dir / "bg_processed.mp4"
+    out = work_dir / f"bg_processed_{tag}.mp4"
     vf = (
         f"scale={SHORT_W}:{SHORT_H}:force_original_aspect_ratio=increase,"
         f"crop={SHORT_W}:{SHORT_H},"
@@ -294,12 +417,19 @@ def _prepare_bg_video(raw_clip: Path, work_dir: Path, duration: float) -> Path:
     return out
 
 
-def _extract_bg_frames(video_path: Path, work_dir: Path, fps: float = BG_FRAME_FPS) -> list[tuple[float, Path]]:
+def _extract_bg_frames(
+    video_path: Path,
+    work_dir: Path,
+    fps: float = BG_FRAME_FPS,
+    tag: str = "0",
+) -> list[tuple[float, Path]]:
     """
     Extract frames at `fps` from video. Returns list of (timestamp, frame_path) sorted by time.
     At 6fps a 40s video yields ~240 frames — noticeably smoother background motion.
     """
-    frame_dir = work_dir / "bg_frames"
+    frame_dir = work_dir / f"bg_frames_{tag}"
+    if frame_dir.exists():
+        shutil.rmtree(frame_dir, ignore_errors=True)
     frame_dir.mkdir(exist_ok=True)
     cmd = [
         _bin("ffmpeg"), "-y",
@@ -324,10 +454,58 @@ def _closest_bg_frame(frames: list[tuple[float, Path]], t: float) -> Path:
     return min(frames, key=lambda x: abs(x[0] - t))[1]
 
 
+def _sample_bg_frame(frames: list[tuple[float, Path]], t: float) -> Path:
+    """
+    Sample a frame by looping local clip time instead of drifting to last frame.
+    """
+    if not frames:
+        raise ValueError("No background frames available")
+    max_t = frames[-1][0] if frames[-1][0] > 0 else 0.01
+    local_t = t % max_t
+    return _closest_bg_frame(frames, local_t)
+
+
+def _build_bg_montage_plan(duration_s: float, source_count: int, seed_hint: str = "") -> list[tuple[float, float, int]]:
+    """
+    Build pacing plan: frequent cuts (1.5s–3.0s), never longer than 4s.
+    Returns list of (start, end, source_idx).
+    """
+    if source_count <= 0:
+        return []
+    rng = random.Random(f"{seed_hint}:{duration_s:.2f}:{source_count}")
+    t = 0.0
+    prev_idx = -1
+    plan: list[tuple[float, float, int]] = []
+    while t < duration_s:
+        shot = min(rng.uniform(BG_MIN_CUT_S, BG_MAX_CUT_S), BG_ABS_MAX_SHOT_S, duration_s - t)
+        choices = list(range(source_count))
+        if prev_idx in choices and len(choices) > 1:
+            choices.remove(prev_idx)
+        idx = rng.choice(choices)
+        plan.append((round(t, 3), round(t + shot, 3), idx))
+        t += shot
+        prev_idx = idx
+    return plan
+
+
+def _bg_source_for_time(plan: list[tuple[float, float, int]], t: float) -> tuple[int, float]:
+    """
+    Return (source_idx, segment_start_time) for time t from montage plan.
+    """
+    if not plan:
+        return 0, 0.0
+    for start, end, idx in plan:
+        if start <= t < end:
+            return idx, start
+    start, _end, idx = plan[-1]
+    return idx, start
+
+
 def _build_background_frame(
     t_mid: float,
     gradient_img,           # RGBA PIL Image
-    bg_frames: list | None, # list of (t, Path) or None
+    bg_frames: list | None, # list[list[(t, Path)]] or None
+    montage_plan: list[tuple[float, float, int]] | None = None,
     gradient_blend: float = 0.40,
 ) -> "PIL.Image.Image":
     """
@@ -338,7 +516,9 @@ def _build_background_frame(
     from PIL import Image
 
     if bg_frames:
-        frame_path = _closest_bg_frame(bg_frames, t_mid)
+        source_idx, seg_start = _bg_source_for_time(montage_plan or [], t_mid)
+        chosen_source = bg_frames[min(max(source_idx, 0), len(bg_frames) - 1)]
+        frame_path = _sample_bg_frame(chosen_source, t_mid - seg_start)
         video_frame = Image.open(frame_path).convert("RGB").resize((SHORT_W, SHORT_H))
         # Blend: (1-alpha)*video + alpha*gradient  →  subtle brand colour tint over footage
         blended = Image.blend(video_frame, gradient_img.convert("RGB"), alpha=gradient_blend)
@@ -400,16 +580,30 @@ def _make_overlay_image(overlay: dict, w: int = SHORT_W, h: int = SHORT_H, label
 
     elif otype == "label":
         text = _clean_text(overlay.get("text", "")).upper()
-        lines, font = _wrap_fit_lines(draw, text, max_width=int(w * 0.78), start_size=66, min_size=34, max_lines=2)
+        lines, font = _wrap_fit_lines(draw, text, max_width=int(w * 0.76), start_size=60, min_size=32, max_lines=2)
         block_h = sum(_text_height(draw, ln, font) for ln in lines) + 8 * max(0, len(lines) - 1)
         pad = 18
-        y0 = label_y0 if label_y0 is not None else int(h * 0.72)
+        y0 = label_y0 if label_y0 is not None else int(h * 0.68)
         card_w = int(w * 0.82)
         x0 = (w - card_w) // 2
         draw.rounded_rectangle(
             [(x0, y0), (x0 + card_w, y0 + block_h + pad * 2)], radius=16, fill=(255, 255, 255, 28)
         )
         _draw_multiline_centered(draw, lines, y0 + pad, font, (255, 255, 255, 255), w, gap=8)
+
+    elif otype == "proof_tag":
+        text = _clean_text(overlay.get("text", "SOURCE"))
+        label = f"SOURCE: {text}"[:74]
+        font = _get_font(26)
+        pad_x, pad_y = 16, 10
+        tw = _text_width(draw, label, font)
+        th = _text_height(draw, label, font)
+        x1 = int(w * 0.96)
+        x0 = x1 - tw - pad_x * 2
+        y0 = int(h * 0.14)
+        y1 = y0 + th + pad_y * 2
+        draw.rounded_rectangle([(x0, y0), (x1, y1)], radius=12, fill=(0, 0, 0, 190))
+        draw.text((x0 + pad_x, y0 + pad_y), label, font=font, fill=(210, 230, 255, 245))
 
     elif otype == "comparison":
         left = _clean_text(overlay.get("left", ""))
@@ -455,6 +649,49 @@ def _ov_start(ov: dict) -> float:
 
 def _ov_end(ov: dict) -> float:
     return round(_ov_start(ov) + float(ov.get("duration_s", 3.0)), 2)
+
+
+def _inject_proof_tags(
+    overlays: list[dict], stat_citations: list[str], duration_s: float
+) -> list[dict]:
+    """
+    For each stat citation, attach a 1.6s proof_tag near the first matching
+    hook_number or comparison overlay.  Adds trust signals ("SPIVA 2025") for
+    money claims without cluttering every frame.
+    """
+    if not stat_citations:
+        return overlays
+    result = list(overlays)
+    cite_idx = 0
+    for ov in overlays:
+        if cite_idx >= len(stat_citations):
+            break
+        if ov.get("type") in {"hook_number", "comparison"}:
+            proof_start = round(_ov_start(ov) + 0.4, 3)
+            if proof_start < duration_s - 1.5:
+                result.append({
+                    "type": "proof_tag",
+                    "text": stat_citations[cite_idx],
+                    "start_time_s": proof_start,
+                    "start_word": ov.get("start_word", 0),
+                    "duration_s": 1.6,
+                })
+                cite_idx += 1
+    return result
+
+
+def _check_label_overlaps(overlays: list[dict]) -> list[str]:
+    """Return warning strings for any label windows that visually overlap in time."""
+    labels = [(ov, _ov_start(ov), _ov_end(ov)) for ov in overlays if ov.get("type") == "label"]
+    warnings: list[str] = []
+    for i, (ov_a, s_a, e_a) in enumerate(labels):
+        for ov_b, s_b, e_b in labels[i + 1:]:
+            if s_b < e_a and s_a < e_b:
+                warnings.append(
+                    f"label overlap: '{ov_a.get('text')}' ({s_a:.1f}–{e_a:.1f}s) "
+                    f"↔ '{ov_b.get('text')}' ({s_b:.1f}–{e_b:.1f}s)"
+                )
+    return warnings
 
 
 def _sanitize_overlays(
@@ -626,17 +863,29 @@ def render(
     pillar = script_data.get("pillar", "investing")
     bg_img = _make_background_image(pillar)
 
-    # Pexels background video (optional — falls back to gradient if unavailable)
-    bg_frames: list | None = None
+    # Pexels background video — true montage pacing (3-6 clips, cuts every 1.5–3s)
+    bg_frames_sources: list | None = None
+    montage_plan: list | None = None
     if os.environ.get("PEXELS_API_KEY"):
         try:
-            raw_clip = _fetch_pexels_clip(pillar, work_dir)
-            if raw_clip:
-                processed = _prepare_bg_video(raw_clip, work_dir, vo_duration)
-                bg_frames = _extract_bg_frames(processed, work_dir, fps=BG_FRAME_FPS)
-                logger.info("Background video ready: %d frames", len(bg_frames))
+            raw_clips = _fetch_pexels_clips(pillar, work_dir, target_count=BG_TARGET_CLIPS)
+            if raw_clips:
+                bg_frames_sources = []
+                for ci, clip in enumerate(raw_clips):
+                    processed = _prepare_bg_video(clip, work_dir, vo_duration, tag=str(ci))
+                    frames = _extract_bg_frames(processed, work_dir, fps=BG_FRAME_FPS, tag=str(ci))
+                    bg_frames_sources.append(frames)
+                montage_plan = _build_bg_montage_plan(
+                    vo_duration, len(bg_frames_sources), seed_hint=pillar
+                )
+                logger.info(
+                    "Background montage ready: %d clips, %d shots",
+                    len(bg_frames_sources), len(montage_plan),
+                )
         except Exception as exc:
             logger.warning("Background video unavailable, using gradient: %s", exc)
+            bg_frames_sources = None
+            montage_plan = None
 
     word_timestamps: list[float] = script_data.get("word_timestamps") or []
     if word_timestamps:
@@ -648,9 +897,17 @@ def render(
     # Step 2: inject cadence labels into actual visual gaps
     overlays = _inject_cadence_labels(overlays, vo_duration)
     overlays = _sanitize_overlays(overlays, vo_duration, word_timestamps)  # re-sort + re-clamp after injection
-    logger.info("Total overlays after cadence injection: %d", len(overlays))
 
-    # Step 3: segment boundaries from overlay start/end times + background cadence
+    # Step 3: inject proof tags AFTER sanitize (proof_tag is not in the sanitize allowlist)
+    stat_citations = script_data.get("stat_citations") or []
+    overlays = _inject_proof_tags(overlays, stat_citations, vo_duration)
+    logger.info("Total overlays after cadence + proof injection: %d", len(overlays))
+
+    # Pre-render quality check: warn on overlapping label windows
+    for warn_msg in _check_label_overlaps(overlays):
+        logger.warning("Quality gate: %s", warn_msg)
+
+    # Step 4: segment boundaries from overlay start/end times + background cadence
     from PIL import Image
     events: set[float] = {0.0, vo_duration}
     for ov in overlays:
@@ -665,7 +922,8 @@ def render(
         t += BG_CADENCE_S
     events_sorted = sorted(events)
 
-    # Step 4: composite each segment frame with Pillow
+    # Step 5: composite each segment frame with Pillow
+    spoken_words_list = _spoken_words(script_data.get("voiceover_script", ""))
     seg_dir = work_dir / "segments"
     seg_dir.mkdir(exist_ok=True)
     concat_lines: list[str] = []
@@ -676,10 +934,15 @@ def render(
         t_mid   = (t_start + t_end) / 2
         duration = t_end - t_start
 
-        active = [ov for ov in overlays if _ov_start(ov) <= t_mid < _ov_end(ov)]
+        all_active = [ov for ov in overlays if _ov_start(ov) <= t_mid < _ov_end(ov)]
 
-        frame = _build_background_frame(t_mid, bg_img, bg_frames)
-        label_next_y = int(SHORT_H * 0.72)
+        # Enforce one label at a time to reduce cognitive overload
+        active_non_labels = [ov for ov in all_active if ov.get("type") != "label"]
+        active_labels = [ov for ov in all_active if ov.get("type") == "label"]
+        active = active_non_labels + active_labels[:MAX_CONCURRENT_LABELS]
+
+        frame = _build_background_frame(t_mid, bg_img, bg_frames_sources, montage_plan=montage_plan)
+        label_next_y = int(SHORT_H * 0.68)
         for ov in active:
             if ov.get("type") == "label":
                 frame = Image.alpha_composite(frame, _make_overlay_image(ov, label_y0=label_next_y))
@@ -687,11 +950,16 @@ def render(
             else:
                 frame = Image.alpha_composite(frame, _make_overlay_image(ov))
 
+        # Word-synced spoken captions (phrase-by-phrase highlight, active word in yellow)
+        if word_timestamps and spoken_words_list:
+            caption_img = _make_spoken_caption_image(spoken_words_list, word_timestamps, t_mid)
+            frame = Image.alpha_composite(frame, caption_img)
+
         seg_path = seg_dir / f"seg_{i:03d}.png"
         frame.convert("RGB").save(seg_path)
         concat_lines.append(f"file '{seg_path.resolve()}'\nduration {duration:.4f}")
 
-    # FFmpeg concat demuxer requires the last entry to be repeated without a duration line
+    # FFmpeg concat demuxer: last entry repeated without a duration line
     if concat_lines:
         last_seg = seg_dir / f"seg_{len(events_sorted) - 2:03d}.png"
         concat_lines.append(f"file '{last_seg.resolve()}'")
@@ -700,17 +968,19 @@ def render(
     concat_file.write_text("\n".join(concat_lines))
     logger.info("Composited %d segment frames via Pillow", len(events_sorted) - 1)
 
-    # Step 5: audio filter (loudnorm + optional bgmusic)
+    # Step 6: audio filter — sidechain ducking under voice + final limiter at -1.0 dBTP
     if bgmusic_path.exists():
         audio_filter = (
             "[1:a]volume=1.0[voice];"
-            "[2:a]volume=0.09[music];"
-            "[voice][music]amix=inputs=2:duration=first[mix];"
-            f"[mix]loudnorm=I={TARGET_LOUDNESS}:TP=-1.5:LRA=7[a]"
+            "[2:a]volume=0.15[raw_music];"
+            # Sidechain compress: voice triggers music level reduction while speaking
+            "[raw_music][voice]sidechaincompress=threshold=0.015:ratio=6:attack=5:release=200[music_ducked];"
+            "[voice][music_ducked]amix=inputs=2:duration=first[mix];"
+            f"[mix]loudnorm=I={TARGET_LOUDNESS}:TP=-1.0:LRA=7[a]"
         )
         audio_inputs = ["-i", str(voiceover_path), "-i", str(bgmusic_path)]
     else:
-        audio_filter = f"[1:a]loudnorm=I={TARGET_LOUDNESS}:TP=-1.5:LRA=7[a]"
+        audio_filter = f"[1:a]loudnorm=I={TARGET_LOUDNESS}:TP=-1.0:LRA=7[a]"
         audio_inputs = ["-i", str(voiceover_path)]
 
     # Step 6: FFmpeg encode — concat image sequence + audio only
