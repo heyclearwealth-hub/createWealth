@@ -352,7 +352,7 @@ FORMAT RULES:
 
 OVERLAY RULES:
 - on_screen text appears at specific word indexes in the voiceover
-- start_word: 0-indexed position of word in voiceover where overlay appears
+- start_word: 0-indexed position of spoken word in voiceover (count only real words — do NOT count [PAUSE] markers)
 - duration_s: how long it stays on screen
 - types: "hook_number" (big stat, 4s), "label" (short phrase, 2.5s), "comparison" (before/after side by side, 4s), "cta" (final call to action, 5s)
 - Plan 8–12 overlays total.

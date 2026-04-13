@@ -473,9 +473,13 @@ def _sanitize_overlays(
             dur = max(1.2, min(float((ov or {}).get("duration_s", 3.0)), 5.0))
         except (TypeError, ValueError):
             dur = 3.0
-        # Compute start time: use real word timestamp when available, else WPS constant
+        # Compute start time: prefer real word timestamp, then preserve any
+        # already-computed start_time_s (e.g. from a prior sanitize pass),
+        # and only fall back to the WPS constant as a last resort.
         if word_timestamps and start_word < len(word_timestamps):
             start_time_s = float(word_timestamps[start_word])
+        elif "start_time_s" in (ov or {}):
+            start_time_s = float((ov or {})["start_time_s"])
         else:
             start_time_s = start_word / WPS
         if start_time_s >= duration_s:
@@ -643,7 +647,7 @@ def render(
 
     # Step 2: inject cadence labels into actual visual gaps
     overlays = _inject_cadence_labels(overlays, vo_duration)
-    overlays = _sanitize_overlays(overlays, vo_duration)  # re-sort + re-clamp after injection
+    overlays = _sanitize_overlays(overlays, vo_duration, word_timestamps)  # re-sort + re-clamp after injection
     logger.info("Total overlays after cadence injection: %d", len(overlays))
 
     # Step 3: segment boundaries from overlay start/end times + background cadence
