@@ -25,7 +25,7 @@ MODEL = os.environ.get("ANTHROPIC_MODEL", DEFAULT_MODEL)
 LAST_SHORTS_FILE = Path("data/last_shorts.json")
 MAX_SHORTS_MEMORY = 10
 WPS = 2.5  # words per second at voiceover pace
-MIN_WORDS = 120
+MIN_WORDS = 110
 MAX_WORDS = 140
 MIN_OVERLAYS = 8
 MAX_OVERLAYS = 12
@@ -325,15 +325,21 @@ def _is_valid_short_shape(data: dict, topic: dict) -> tuple[bool, str]:
     return True, "ok"
 
 
-def _build_prompt(topic: dict) -> str:
+def _build_prompt(topic: dict, feedback: str = "") -> str:
+    feedback_block = (
+        f"\n⚠️  PREVIOUS ATTEMPT REJECTED — {feedback}"
+        f"\nYou MUST fix this before responding.\n"
+        if feedback else ""
+    )
     return f"""You are writing a YouTube Shorts script for a personal finance channel called ClearWealth.
-
+{feedback_block}
 TOPIC: {topic["topic"]}
 ANGLE: {topic["angle"]}
 PILLAR: {topic["pillar"]}
 
 FORMAT RULES:
-- Total voiceover: 45–55 seconds (strictly 110–140 words at 2.5 words/sec)
+- Total voiceover: 45–55 seconds (MINIMUM 110 words, TARGET 120–130 words, MAXIMUM 140 words at 2.5 words/sec)
+- Count your words before finalising — scripts under 110 words will be rejected
 - The VERY FIRST spoken token must contain a number or dollar amount
 - Hook must be spoken in under 0.5s and include a consequence (loss/gain)
 - Use this 3-beat flow only: SHOCK NUMBER -> SIMPLE MATH PROOF -> ACTION STEP
@@ -360,7 +366,7 @@ Return ONLY this JSON, no explanation:
     "<title option 2>",
     "<title option 3>"
   ],
-  "voiceover_script": "<full 45-55s spoken script with [PAUSE] markers. First word must be a number or shocking fact.>",
+  "voiceover_script": "<full spoken script, 110–140 words, with [PAUSE] markers. First word must be a number or shocking fact.>",
   "overlays": [
     {{"type": "hook_number", "text": "<big stat>", "start_word": 0, "duration_s": 4.0}},
     {{"type": "label", "text": "<short phrase>", "start_word": 15, "duration_s": 2.5}},
@@ -386,14 +392,16 @@ def generate(topic: dict | None = None, used_topics: list[str] | None = None) ->
 
     logger.info("Generating Short for topic: %s", topic["topic"])
 
+    last_failure = ""
     for attempt in range(3):
         try:
             temperature = 0.8 + attempt * 0.1
-            raw = _call_claude(_build_prompt(topic), temperature=temperature)
+            raw = _call_claude(_build_prompt(topic, feedback=last_failure), temperature=temperature)
             data = _extract_json(raw)
         except Exception as exc:
             if attempt == 2:
                 raise RuntimeError(f"Short script generation failed: {exc}") from exc
+            last_failure = str(exc)
             logger.warning("Attempt %d failed: %s — retrying", attempt + 1, exc)
             continue
 
@@ -401,6 +409,7 @@ def generate(topic: dict | None = None, used_topics: list[str] | None = None) ->
         if not script:
             if attempt == 2:
                 raise RuntimeError("Short script missing after all attempts")
+            last_failure = "voiceover_script was empty"
             logger.warning("Script missing (attempt %d), retrying", attempt + 1)
             continue
 
@@ -408,6 +417,7 @@ def generate(topic: dict | None = None, used_topics: list[str] | None = None) ->
         if not valid:
             if attempt == 2:
                 raise RuntimeError(f"Short script validation failed: {reason}")
+            last_failure = reason
             logger.warning("Short validation failed (attempt %d): %s", attempt + 1, reason)
             continue
 
