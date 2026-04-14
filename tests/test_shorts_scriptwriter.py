@@ -34,6 +34,18 @@ def test_trim_script_to_max_words_caps_length():
     assert trimmed.endswith(".")
 
 
+def test_pad_script_to_min_words_reaches_floor():
+    script = " ".join(["word"] * 109) + "."
+    padded = sw._pad_script_to_min_words(script, min_words=110)
+    assert sw._word_count(padded) >= 110
+
+
+def test_ensure_numeric_opening_rewrites_when_missing_number():
+    script = "Most people ignore this rule and lose money over time. Build an emergency fund now."
+    fixed = sw._ensure_numeric_opening(script)
+    assert sw._first_token(fixed)[0].isdigit()
+
+
 def test_hook_repair_then_trim_stays_within_budget():
     base = "9% " + " ".join(["token"] * 145)
     repaired = sw._repair_hook_opening(base, "hook missing consequence framing in opening beat")
@@ -45,3 +57,12 @@ def test_repair_does_not_run_for_non_hook_reason():
     script = "10% budget plan can improve your spending this year."
     repaired = sw._repair_hook_opening(script, "word-count out of range (142, expected 110-140)")
     assert repaired == script
+
+
+def test_fit_script_word_budget_handles_short_and_long():
+    short_script = " ".join(["word"] * 109)
+    long_script = " ".join(["word"] * 160)
+    short_fit = sw._fit_script_word_budget(short_script, min_words=110, max_words=140)
+    long_fit = sw._fit_script_word_budget(long_script, min_words=110, max_words=140)
+    assert 110 <= sw._word_count(short_fit) <= 140
+    assert 110 <= sw._word_count(long_fit) <= 140

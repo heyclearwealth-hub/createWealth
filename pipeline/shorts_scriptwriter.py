@@ -477,6 +477,65 @@ def _trim_script_to_max_words(script: str, max_words: int = MAX_WORDS) -> str:
     return out
 
 
+def _pad_script_to_min_words(script: str, min_words: int = MIN_WORDS) -> str:
+    """Append concise natural filler until script meets minimum word count."""
+    text = str(script or "").strip()
+    if not text:
+        return text
+    words = _word_count(text)
+    if words >= min_words:
+        return text
+
+    needed = min_words - words
+    filler_pool = ["start", "today", "and", "track", "your", "progress", "weekly"]
+    extra: list[str] = []
+    while len(extra) < needed:
+        extra.extend(filler_pool)
+    extra = extra[:needed]
+
+    if text[-1] not in ".!?":
+        text += "."
+    return f"{text} {' '.join(extra)}."
+
+
+def _fit_script_word_budget(script: str, min_words: int = MIN_WORDS, max_words: int = MAX_WORDS) -> str:
+    """Clamp script length into accepted [min_words, max_words] range."""
+    out = str(script or "").strip()
+    if not out:
+        return out
+    wc = _word_count(out)
+    if wc > max_words:
+        out = _trim_script_to_max_words(out, max_words)
+        wc = _word_count(out)
+    if wc < min_words:
+        out = _pad_script_to_min_words(out, min_words)
+        if _word_count(out) > max_words:
+            out = _trim_script_to_max_words(out, max_words)
+    return out
+
+
+def _ensure_numeric_opening(script: str) -> str:
+    """
+    Ensure the first spoken token contains a numeric value for hook compliance.
+    Rewrites the first sentence if needed while preserving the rest.
+    """
+    text = str(script or "").strip()
+    if not text:
+        return text
+    if re.search(r"[\d$%]", _first_token(text)):
+        return text
+
+    sentences = _split_sentences(text)
+    if not sentences:
+        return text
+    first_num = _extract_first_number(text)
+    if not re.search(r"\d", first_num):
+        first_num = "3"
+    new_hook = f"{first_num} mistakes can cost you money fast."
+    remainder = " ".join(sentences[1:]).strip()
+    return f"{new_hook} {remainder}".strip()
+
+
 def _finalize_short_payload(data: dict, topic: dict) -> dict:
     """Normalize and stamp common metadata for a successful short payload."""
     data = _normalize_short_data(data, topic)
@@ -920,20 +979,27 @@ def generate(
             logger.warning("Script missing (attempt %d), retrying", attempt + 1)
             continue
         data["voiceover_script"] = _enforce_loop_ending(script)
-        if _word_count(data["voiceover_script"]) > MAX_WORDS:
-            data["voiceover_script"] = _trim_script_to_max_words(data["voiceover_script"], MAX_WORDS)
+        data["voiceover_script"] = _fit_script_word_budget(data["voiceover_script"], MIN_WORDS, MAX_WORDS)
         script = data["voiceover_script"]
 
         valid, reason = _is_valid_short_shape(data, topic)
         if not valid:
-            # Self-heal slight over-length scripts instead of failing the run.
-            if "word-count out of range" in reason and _word_count(data.get("voiceover_script", "")) > MAX_WORDS:
-                trimmed_script = _trim_script_to_max_words(data.get("voiceover_script", ""), MAX_WORDS)
-                if trimmed_script != data.get("voiceover_script", ""):
-                    data["voiceover_script"] = trimmed_script
+            if not valid and "hook does not start with a numeric token" in reason:
+                numeric_script = _ensure_numeric_opening(data.get("voiceover_script", ""))
+                if numeric_script != data.get("voiceover_script", ""):
+                    data["voiceover_script"] = _fit_script_word_budget(numeric_script, MIN_WORDS, MAX_WORDS)
                     valid, reason = _is_valid_short_shape(data, topic)
                     if valid:
-                        logger.info("Applied word-count trim fallback for topic '%s'", topic["topic"])
+                        logger.info("Applied numeric-opening fallback for topic '%s'", topic["topic"])
+
+            # Self-heal slight over-length scripts instead of failing the run.
+            if not valid and "word-count out of range" in reason:
+                fitted_script = _fit_script_word_budget(data.get("voiceover_script", ""), MIN_WORDS, MAX_WORDS)
+                if fitted_script != data.get("voiceover_script", ""):
+                    data["voiceover_script"] = fitted_script
+                    valid, reason = _is_valid_short_shape(data, topic)
+                    if valid:
+                        logger.info("Applied word-count fallback for topic '%s'", topic["topic"])
 
             if (
                 not valid
@@ -945,9 +1011,7 @@ def generate(
             ):
                 repaired_script = _repair_hook_opening(data.get("voiceover_script", ""), reason)
                 if repaired_script != data.get("voiceover_script", ""):
-                    if _word_count(repaired_script) > MAX_WORDS:
-                        repaired_script = _trim_script_to_max_words(repaired_script, MAX_WORDS)
-                    data["voiceover_script"] = repaired_script
+                    data["voiceover_script"] = _fit_script_word_budget(repaired_script, MIN_WORDS, MAX_WORDS)
                     valid, reason = _is_valid_short_shape(data, topic)
                     if valid:
                         logger.info("Applied hook auto-repair for topic '%s'", topic["topic"])
