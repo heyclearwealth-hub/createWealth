@@ -42,8 +42,9 @@ def test_pad_script_to_min_words_reaches_floor():
 
 def test_ensure_numeric_opening_rewrites_when_missing_number():
     script = "Most people ignore this rule and lose money over time. Build an emergency fund now."
-    fixed = sw._ensure_numeric_opening(script)
+    fixed = sw._ensure_numeric_opening(script, topic={"topic": "emergency fund rule"})
     assert sw._first_token(fixed)[0].isdigit()
+    assert "emergency fund rule" in fixed.lower()
 
 
 def test_hook_repair_then_trim_stays_within_budget():
@@ -66,3 +67,20 @@ def test_fit_script_word_budget_handles_short_and_long():
     long_fit = sw._fit_script_word_budget(long_script, min_words=110, max_words=140)
     assert 110 <= sw._word_count(short_fit) <= 140
     assert 110 <= sw._word_count(long_fit) <= 140
+
+
+def test_retime_overlays_for_script_edit_scales_positions():
+    data = {
+        "overlays": [
+            {"type": "hook_number", "start_word": 0, "text": "5%"},
+            {"type": "label", "start_word": 50, "text": "MATH"},
+            {"type": "cta", "start_word": 120, "text": "FOLLOW"},
+        ]
+    }
+    old_script = " ".join(["word"] * 140)
+    new_script = " ".join(["word"] * 112)
+    sw._retime_overlays_for_script_edit(data, old_script, new_script)
+    overlays = data["overlays"]
+    assert overlays[0]["start_word"] == 0
+    assert overlays[1]["start_word"] < 50
+    assert overlays[2]["start_word"] == max(112 - int(3.0 * sw.WPS), 0)

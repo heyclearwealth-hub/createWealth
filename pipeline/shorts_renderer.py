@@ -47,8 +47,30 @@ BG_MAX_PER_QUERY = 1
 CAPTION_WINDOW_WORDS = 7
 MAX_CONCURRENT_LABELS = 1
 LABEL_MIN_GAP_S = 0.35
-CTA_SAFE_TAIL_S = 4.0
+CTA_SAFE_TAIL_S = 3.0
 MIX_TRUE_PEAK_TARGET = -3.0
+
+GENERIC_LABEL_TEXTS = {
+    "REAL EXAMPLE",
+    "SIMPLE MATH",
+    "THIS IS KEY",
+    "TIME MATTERS",
+    "START SMALL",
+    "STAY CONSISTENT",
+    "REAL RETURNS",
+    "THE MATH",
+    "PROOF POINT",
+    "MONEY MOVE",
+    "DEBT TRAP",
+    "REAL COST",
+    "BREAK FREE",
+    "TAX FACT",
+    "THE RULE",
+    "SALARY MOVE",
+    "WHY IT MATTERS",
+    "REAL IMPACT",
+    "THE ACTION",
+}
 
 # Import pillar gradients from thumbnail_gen to keep a single source of truth.
 # New pillars added there will automatically apply here too.
@@ -866,16 +888,14 @@ def _deoverlap_label_overlays(overlays: list[dict], duration_s: float, min_gap_s
     for label in labels:
         start = _ov_start(label)
         dur = float(label.get("duration_s", 2.0))
-
-        # Preserve final on-screen disclaimer if present.
-        if "EDUCATIONAL ONLY" in str(label.get("text", "")).upper():
-            label["start_time_s"] = round(max(start, duration_s - 2.2), 3)
-            label["duration_s"] = min(2.0, max(0.8, duration_s - label["start_time_s"] - 0.05))
-            out.append(label)
-            continue
+        text_up = _clean_text(label.get("text", "")).upper()
 
         if start >= tail_cutoff:
-            continue
+            # Keep semantic (non-generic) labels by moving them a bit earlier;
+            # drop generic cadence labels near CTA to reduce clutter.
+            if text_up in GENERIC_LABEL_TEXTS:
+                continue
+            start = max(next_free, tail_cutoff - min(1.2, dur))
 
         start = max(start, next_free)
         end = min(start + dur, tail_cutoff)

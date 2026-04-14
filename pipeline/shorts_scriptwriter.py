@@ -486,16 +486,16 @@ def _pad_script_to_min_words(script: str, min_words: int = MIN_WORDS) -> str:
     if words >= min_words:
         return text
 
-    needed = min_words - words
-    filler_pool = ["start", "today", "and", "track", "your", "progress", "weekly"]
-    extra: list[str] = []
-    while len(extra) < needed:
-        extra.extend(filler_pool)
-    extra = extra[:needed]
-
     if text[-1] not in ".!?":
         text += "."
-    return f"{text} {' '.join(extra)}."
+    needed = min_words - words
+    if needed <= 4:
+        extra = "Start today and track weekly."
+    elif needed <= 8:
+        extra = "Start today, automate one transfer, and track this weekly."
+    else:
+        extra = "Start today, automate one transfer, and track this number every single week."
+    return f"{text} {extra}".strip()
 
 
 def _fit_script_word_budget(script: str, min_words: int = MIN_WORDS, max_words: int = MAX_WORDS) -> str:
@@ -514,7 +514,7 @@ def _fit_script_word_budget(script: str, min_words: int = MIN_WORDS, max_words: 
     return out
 
 
-def _ensure_numeric_opening(script: str) -> str:
+def _ensure_numeric_opening(script: str, topic: dict | None = None) -> str:
     """
     Ensure the first spoken token contains a numeric value for hook compliance.
     Rewrites the first sentence if needed while preserving the rest.
@@ -531,9 +531,54 @@ def _ensure_numeric_opening(script: str) -> str:
     first_num = _extract_first_number(text)
     if not re.search(r"\d", first_num):
         first_num = "3"
-    new_hook = f"{first_num} mistakes can cost you money fast."
+    topic_phrase = str((topic or {}).get("topic", "money rule")).strip().lower()
+    topic_words = re.findall(r"[a-z0-9]+", topic_phrase)[:3]
+    topic_stub = " ".join(topic_words) if topic_words else "money"
+    new_hook = f"{first_num} people ignore this {topic_stub} rule and lose money over years."
     remainder = " ".join(sentences[1:]).strip()
     return f"{new_hook} {remainder}".strip()
+
+
+def _retime_overlays_for_script_edit(data: dict, old_script: str, new_script: str) -> None:
+    """
+    Keep overlay timing roughly aligned when fallback logic rewrites script text.
+    Maps old word indexes to new indexes by relative position.
+    """
+    overlays = data.get("overlays")
+    if not isinstance(overlays, list) or not overlays:
+        return
+
+    old_words = max(1, _word_count(old_script))
+    new_words = max(1, _word_count(new_script))
+    if old_words == new_words:
+        return
+
+    retimed: list[dict] = []
+    for ov in overlays:
+        if not isinstance(ov, dict):
+            continue
+        kind = str(ov.get("type", "")).strip()
+        cloned = dict(ov)
+        try:
+            old_start = int(cloned.get("start_word", 0))
+        except (TypeError, ValueError):
+            old_start = 0
+
+        if kind == "hook_number":
+            new_start = 0
+            first_num = _extract_first_number(new_script)
+            if first_num:
+                cloned["text"] = first_num
+        elif kind == "cta":
+            new_start = max(new_words - int(3.0 * WPS), 0)
+        else:
+            ratio_pos = max(0.0, min(1.0, old_start / old_words))
+            new_start = int(round(ratio_pos * new_words))
+
+        cloned["start_word"] = max(0, min(new_start, max(0, new_words - 1)))
+        retimed.append(cloned)
+
+    data["overlays"] = retimed
 
 
 def _finalize_short_payload(data: dict, topic: dict) -> dict:
@@ -955,6 +1000,14 @@ def generate(
 
     logger.info("Generating Short for topic: %s", topic["topic"])
 
+    def _apply_script_update(data: dict, new_script: str) -> str:
+        old_script = str(data.get("voiceover_script", "") or "")
+        fitted = _fit_script_word_budget(new_script, MIN_WORDS, MAX_WORDS)
+        if fitted != old_script:
+            _retime_overlays_for_script_edit(data, old_script, fitted)
+        data["voiceover_script"] = fitted
+        return fitted
+
     last_failure = ""
     for attempt in range(3):
         try:
@@ -978,16 +1031,15 @@ def generate(
             last_failure = "voiceover_script was empty"
             logger.warning("Script missing (attempt %d), retrying", attempt + 1)
             continue
-        data["voiceover_script"] = _enforce_loop_ending(script)
-        data["voiceover_script"] = _fit_script_word_budget(data["voiceover_script"], MIN_WORDS, MAX_WORDS)
-        script = data["voiceover_script"]
+        data["voiceover_script"] = script
+        script = _apply_script_update(data, _enforce_loop_ending(script))
 
         valid, reason = _is_valid_short_shape(data, topic)
         if not valid:
             if not valid and "hook does not start with a numeric token" in reason:
-                numeric_script = _ensure_numeric_opening(data.get("voiceover_script", ""))
+                numeric_script = _ensure_numeric_opening(data.get("voiceover_script", ""), topic=topic)
                 if numeric_script != data.get("voiceover_script", ""):
-                    data["voiceover_script"] = _fit_script_word_budget(numeric_script, MIN_WORDS, MAX_WORDS)
+                    _apply_script_update(data, numeric_script)
                     valid, reason = _is_valid_short_shape(data, topic)
                     if valid:
                         logger.info("Applied numeric-opening fallback for topic '%s'", topic["topic"])
@@ -996,7 +1048,7 @@ def generate(
             if not valid and "word-count out of range" in reason:
                 fitted_script = _fit_script_word_budget(data.get("voiceover_script", ""), MIN_WORDS, MAX_WORDS)
                 if fitted_script != data.get("voiceover_script", ""):
-                    data["voiceover_script"] = fitted_script
+                    _apply_script_update(data, fitted_script)
                     valid, reason = _is_valid_short_shape(data, topic)
                     if valid:
                         logger.info("Applied word-count fallback for topic '%s'", topic["topic"])
@@ -1011,7 +1063,7 @@ def generate(
             ):
                 repaired_script = _repair_hook_opening(data.get("voiceover_script", ""), reason)
                 if repaired_script != data.get("voiceover_script", ""):
-                    data["voiceover_script"] = _fit_script_word_budget(repaired_script, MIN_WORDS, MAX_WORDS)
+                    _apply_script_update(data, repaired_script)
                     valid, reason = _is_valid_short_shape(data, topic)
                     if valid:
                         logger.info("Applied hook auto-repair for topic '%s'", topic["topic"])

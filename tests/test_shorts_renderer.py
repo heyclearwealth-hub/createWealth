@@ -34,3 +34,15 @@ def test_deoverlap_label_overlays_removes_collisions():
     labels = [ov for ov in cleaned if ov["type"] == "label"]
     assert len(labels) == 2
     assert sr._ov_start(labels[1]) >= sr._ov_end(labels[0])
+
+
+def test_deoverlap_keeps_semantic_tail_label_but_drops_generic_tail_label():
+    overlays = [
+        {"type": "label", "text": "REAL COST", "start_time_s": 47.2, "duration_s": 1.6},
+        {"type": "label", "text": "HIGH INTEREST FIRST", "start_time_s": 47.4, "duration_s": 1.6},
+        {"type": "cta", "text": "Follow", "start_time_s": 45.0, "duration_s": 3.5},
+    ]
+    cleaned = sr._deoverlap_label_overlays(overlays, duration_s=49.0)
+    kept_texts = [ov.get("text", "") for ov in cleaned if ov.get("type") == "label"]
+    assert "REAL COST" not in kept_texts
+    assert "HIGH INTEREST FIRST" in kept_texts
