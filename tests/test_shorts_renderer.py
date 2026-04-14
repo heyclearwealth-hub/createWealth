@@ -22,3 +22,15 @@ def test_build_visual_queries_includes_topic_hints_first():
     assert queries
     assert any("roth ira" in q.lower() for q in queries[:4])
     assert any("etf" in q.lower() for q in queries[:6])
+
+
+def test_deoverlap_label_overlays_removes_collisions():
+    overlays = [
+        {"type": "label", "text": "A", "start_time_s": 4.0, "duration_s": 2.0},
+        {"type": "label", "text": "B", "start_time_s": 4.7, "duration_s": 2.0},
+        {"type": "cta", "text": "Follow", "start_time_s": 45.0, "duration_s": 3.5},
+    ]
+    cleaned = sr._deoverlap_label_overlays(overlays, duration_s=49.0)
+    labels = [ov for ov in cleaned if ov["type"] == "label"]
+    assert len(labels) == 2
+    assert sr._ov_start(labels[1]) >= sr._ov_end(labels[0])

@@ -42,9 +42,13 @@ BG_MAX_CUT_S = 3.0
 BG_ABS_MAX_SHOT_S = 4.0
 BG_TARGET_CLIPS = 4
 BG_MIN_SOURCES = 2
+BG_MAX_PER_QUERY = 1
 
 CAPTION_WINDOW_WORDS = 7
 MAX_CONCURRENT_LABELS = 1
+LABEL_MIN_GAP_S = 0.35
+CTA_SAFE_TAIL_S = 4.0
+MIX_TRUE_PEAK_TARGET = -3.0
 
 # Import pillar gradients from thumbnail_gen to keep a single source of truth.
 # New pillars added there will automatically apply here too.
@@ -396,6 +400,7 @@ def _fetch_pexels_clips(
     for query in queries:
         if len(clips) >= target_count:
             break
+        per_query_downloads = 0
         try:
             resp = requests.get(
                 "https://api.pexels.com/videos/search",
@@ -445,6 +450,9 @@ def _fetch_pexels_clips(
                 clips.append(dest)
                 logger.info("Downloaded Pexels bg clip %d/%d: %s (query=%s)", len(clips), target_count, dest, query)
                 if len(clips) >= target_count:
+                    break
+                per_query_downloads += 1
+                if per_query_downloads >= BG_MAX_PER_QUERY:
                     break
 
     return clips
@@ -678,7 +686,10 @@ def _make_overlay_image(overlay: dict, w: int = SHORT_W, h: int = SHORT_H, label
 
     elif otype == "proof_tag":
         text = _clean_text(overlay.get("text", "SOURCE"))
-        label = f"SOURCE: {text}"[:74]
+        if overlay.get("plain_text", False):
+            label = text[:74]
+        else:
+            label = f"SOURCE: {text}"[:74]
         font = _get_font(26)
         pad_x, pad_y = 16, 10
         tw = _text_width(draw, label, font)
@@ -710,7 +721,7 @@ def _make_overlay_image(overlay: dict, w: int = SHORT_W, h: int = SHORT_H, label
         lines, font = _wrap_fit_lines(draw, text, max_width=int(w * 0.80), start_size=58, min_size=32, max_lines=2)
         block_h = sum(_text_height(draw, ln, font) for ln in lines) + 8 * max(0, len(lines) - 1)
         pad = 24
-        y0 = int(h * 0.82)
+        y0 = int(h * 0.76)
         card_w = int(w * 0.84)
         x0 = (w - card_w) // 2
         draw.rounded_rectangle(
@@ -839,6 +850,47 @@ def _sanitize_overlays(
     return safe
 
 
+def _deoverlap_label_overlays(overlays: list[dict], duration_s: float, min_gap_s: float = LABEL_MIN_GAP_S) -> list[dict]:
+    """
+    Prevent stacked/overlapping labels by shifting later labels forward.
+    Drops labels that cannot fit cleanly before the tail CTA-safe window.
+    """
+    out: list[dict] = []
+    labels = [dict(ov) for ov in overlays if ov.get("type") == "label"]
+    non_labels = [dict(ov) for ov in overlays if ov.get("type") != "label"]
+    labels.sort(key=_ov_start)
+
+    # Keep final tail cleaner for CTA + outro readability.
+    tail_cutoff = max(0.0, duration_s - CTA_SAFE_TAIL_S)
+    next_free = 0.0
+    for label in labels:
+        start = _ov_start(label)
+        dur = float(label.get("duration_s", 2.0))
+
+        # Preserve final on-screen disclaimer if present.
+        if "EDUCATIONAL ONLY" in str(label.get("text", "")).upper():
+            label["start_time_s"] = round(max(start, duration_s - 2.2), 3)
+            label["duration_s"] = min(2.0, max(0.8, duration_s - label["start_time_s"] - 0.05))
+            out.append(label)
+            continue
+
+        if start >= tail_cutoff:
+            continue
+
+        start = max(start, next_free)
+        end = min(start + dur, tail_cutoff)
+        if end - start < 0.8:
+            continue
+        label["start_time_s"] = round(start, 3)
+        label["duration_s"] = round(end - start, 2)
+        out.append(label)
+        next_free = end + min_gap_s
+
+    merged = non_labels + out
+    merged.sort(key=_ov_start)
+    return merged
+
+
 _PILLAR_CADENCE_LABELS: dict[str, list[str]] = {
     "investing":     ["REAL RETURNS", "THE MATH", "PROOF POINT", "TIME MATTERS"],
     "budgeting":     ["REAL EXAMPLE", "SIMPLE MATH", "MONEY MOVE", "THIS IS KEY"],
@@ -941,8 +993,8 @@ def _quality_gate(output_path: Path, expected_duration: float) -> None:
     if mean_db is not None and mean_db < -19.5:
         raise RuntimeError(f"Audio too quiet: mean {mean_db:.1f} dB")
     # YouTube loudness normalization flattens clipped/over-compressed audio.
-    # Warn if peak exceeds -3 dBTP (YouTube's recommended headroom target).
-    if max_db is not None and max_db > -3.0:
+    # Warn if peak exceeds our safer -3 dBTP target.
+    if max_db is not None and max_db > MIX_TRUE_PEAK_TARGET:
         logger.warning(
             "Audio peak %.1f dB exceeds -3 dBTP — may sound flat after YouTube loudness normalization",
             max_db,
@@ -1055,6 +1107,7 @@ def render(
     _overlays_before_cadence = len(overlays)
     overlays = _inject_cadence_labels(overlays, vo_duration, pillar=pillar)
     overlays = _sanitize_overlays(overlays, vo_duration, word_timestamps)  # re-sort + re-clamp after injection
+    overlays = _deoverlap_label_overlays(overlays, vo_duration)
     logger.info(
         "Overlays: %d from script → %d cadence-injected → %d total after sanitize",
         _overlays_before_cadence,
@@ -1076,12 +1129,15 @@ def render(
     if has_financial_claim:
         disclaimer_start = max(0.0, round(vo_duration - 2.2, 2))
         overlays.append({
-            "type": "label",
-            "text": "EDUCATIONAL ONLY. NOT ADVICE.",
+            "type": "proof_tag",
+            "text": "Educational only. Not advice.",
+            "plain_text": True,
             "start_time_s": disclaimer_start,
             "duration_s": 2.0,
         })
         logger.info("Injected on-screen financial disclaimer at %.1fs", disclaimer_start)
+
+    overlays = _deoverlap_label_overlays(overlays, vo_duration)
 
     logger.info("Total overlays after cadence + proof injection: %d", len(overlays))
 
@@ -1163,14 +1219,14 @@ def render(
             # Sidechain compress: voice triggers music level reduction while speaking
             "[raw_music][voice_sc]sidechaincompress=threshold=0.015:ratio=6:attack=5:release=200[music_ducked];"
             "[voice_main][music_ducked]amix=inputs=2:duration=first[mix];"
-            f"[mix]loudnorm=I={TARGET_LOUDNESS}:TP=-1.0:LRA=7[a]"
+            f"[mix]loudnorm=I={TARGET_LOUDNESS}:TP={MIX_TRUE_PEAK_TARGET}:LRA=7[a]"
         )
         audio_inputs = ["-i", str(voiceover_path), "-i", str(bgmusic_path)]
     else:
         audio_filter = (
             "[1:a]highpass=f=85,lowpass=f=12000,"
             "acompressor=threshold=-17dB:ratio=2.2:attack=15:release=180:makeup=3,"
-            f"loudnorm=I={TARGET_LOUDNESS}:TP=-1.0:LRA=7[a]"
+            f"loudnorm=I={TARGET_LOUDNESS}:TP={MIX_TRUE_PEAK_TARGET}:LRA=7[a]"
         )
         audio_inputs = ["-i", str(voiceover_path)]
 

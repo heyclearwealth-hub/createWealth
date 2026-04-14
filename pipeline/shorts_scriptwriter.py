@@ -368,12 +368,13 @@ def _loop_ending_line(script: str) -> str:
         core_insight = " ".join(words[:8]).rstrip(".,!?")
 
     if core_insight:
-        return f"Did you catch that? Replay to see if {core_insight} applies to you."
+        short_core = " ".join(core_insight.split()[:5]).rstrip(".,!?")
+        return f"Replay and apply this: {short_core}."
     # Fallback: find a mid-script number (skip the first one, which is the hook).
     # Referencing the hook number again in the loop ending provides no new curiosity trigger.
     all_numbers = re.findall(r"\$?\d[\d,]*(?:\.\d+)?%?", _clean_script_text(script))
     mid_number = all_numbers[1] if len(all_numbers) >= 2 else (all_numbers[0] if all_numbers else "this")
-    return f"Did you catch the {mid_number} detail? Replay from the middle to see how it works."
+    return f"Replay this and lock in the {mid_number} math."
 
 
 def _enforce_loop_ending(script: str) -> str:
@@ -434,20 +435,21 @@ def _repair_hook_opening(script: str, reason: str) -> str:
     if not (missing_pain or missing_consequence):
         return cleaned
 
-    tokens = cleaned.split()
-    if len(tokens) < 2:
+    sentences = _split_sentences(cleaned)
+    if not sentences:
         return cleaned
 
-    # Keep additions minimal so we don't push word count out of bounds.
+    first_num = _extract_first_number(cleaned)
+    # Keep additions short and natural to avoid obvious AI-repair artifacts.
     if missing_pain and missing_consequence:
-        injection = "lose money costs later"
+        repaired_hook = f"{first_num} of people lose money and pay for it over years."
     elif missing_pain:
-        injection = "lose money"
+        repaired_hook = f"{first_num} of people lose free money fast."
     else:
-        injection = "costs wealth later"
+        repaired_hook = f"{first_num} of people leave money unclaimed, and that costs them over years."
 
-    repaired = " ".join([tokens[0], injection, *tokens[1:]])
-    return repaired
+    remainder = " ".join(sentences[1:]).strip()
+    return f"{repaired_hook} {remainder}".strip()
 
 
 def _trim_script_to_max_words(script: str, max_words: int = MAX_WORDS) -> str:
@@ -461,8 +463,18 @@ def _trim_script_to_max_words(script: str, max_words: int = MAX_WORDS) -> str:
     if _word_count(text) <= max_words:
         return text
 
-    tokens = re.findall(r"[A-Za-z0-9$%']+", _clean_script_text(text))
-    return " ".join(tokens[:max_words])
+    out_tokens: list[str] = []
+    running_words = 0
+    for tok in text.split():
+        token_words = len(re.findall(r"[A-Za-z0-9$%']+", tok))
+        if running_words + token_words > max_words:
+            break
+        out_tokens.append(tok)
+        running_words += token_words
+    out = " ".join(out_tokens).strip()
+    if out and out[-1] not in ".!?":
+        out += "."
+    return out
 
 
 def _finalize_short_payload(data: dict, topic: dict) -> dict:
@@ -632,7 +644,7 @@ def _normalize_overlay(overlay: dict, word_count: int) -> dict | None:
         normalized["right"] = _normalize_text((overlay or {}).get("right"), "After")
     else:  # cta
         cta = " ".join(str((overlay or {}).get("text", "")).split()).strip()
-        normalized["text"] = cta or "Save this and follow for more"
+        normalized["text"] = _normalize_text(cta, "Save this and follow for more")
 
     return normalized
 
@@ -664,7 +676,7 @@ def _ensure_overlay_density(overlays: list[dict], script: str, topic: dict) -> l
         )
 
     # Ensure CTA overlay near the end — use pillar-specific copy.
-    cta_start = max(words - 12, 0)
+    cta_start = max(words - int(3.0 * WPS), 0)
     if not any(o["type"] == "cta" for o in normalized):
         pillar = str(topic.get("pillar", "")).lower()
         cta_copy = PILLAR_CTA_TEXT.get(pillar, "Follow for more money tips")
@@ -673,7 +685,7 @@ def _ensure_overlay_density(overlays: list[dict], script: str, topic: dict) -> l
                 "type": "cta",
                 "text": cta_copy,
                 "start_word": cta_start,
-                "duration_s": 4.5,
+                "duration_s": 3.8,
             }
         )
 

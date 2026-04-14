@@ -16,7 +16,7 @@ def test_assess_hook_strength_accepts_leaving_money_phrasing():
 def test_repair_hook_opening_injects_signal_words():
     script = "8% invested monthly can change your retirement path if you stay consistent."
     repaired = sw._repair_hook_opening(script, "hook missing pain framing in opening beat")
-    assert repaired.startswith("8% lose money ")
+    assert repaired.startswith("8% of people lose free money fast.")
 
 
 def test_repair_hook_opening_injects_consequence_terms():
@@ -31,6 +31,7 @@ def test_trim_script_to_max_words_caps_length():
     script = " ".join(["word"] * 160)
     trimmed = sw._trim_script_to_max_words(script, max_words=140)
     assert sw._word_count(trimmed) <= 140
+    assert trimmed.endswith(".")
 
 
 def test_hook_repair_then_trim_stays_within_budget():
