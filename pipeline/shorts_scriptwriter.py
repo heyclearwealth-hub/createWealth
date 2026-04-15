@@ -9,6 +9,8 @@ Output JSON includes:
 - description: short YouTube description with disclaimer
 - hashtags: list of hashtags
 """
+from __future__ import annotations
+
 import json
 import logging
 import os
@@ -24,10 +26,10 @@ logger = logging.getLogger(__name__)
 DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 MODEL = os.environ.get("ANTHROPIC_MODEL", DEFAULT_MODEL)
 LAST_SHORTS_FILE = Path("data/last_shorts.json")
-MAX_SHORTS_MEMORY = 10
+MAX_SHORTS_MEMORY = 120
 WPS = 2.5  # words per second at voiceover pace
 MIN_WORDS = 110
-MAX_WORDS = 140
+MAX_WORDS = 125
 MIN_OVERLAYS = 6
 MAX_OVERLAYS = 10
 MAX_TEXT_CHARS = 34
@@ -85,6 +87,31 @@ FINANCE_TOPICS = [
     {"topic": "investing in your 20s vs 30s", "pillar": "investing", "angle": "starting 10 years late costs 4x more"},
     {"topic": "car loan trap", "pillar": "debt", "angle": "how a $400/month car payment kills wealth"},
     {"topic": "net worth calculation", "pillar": "budgeting", "angle": "the one number that actually tells you how you're doing"},
+    {"topic": "expense ratio drag", "pillar": "investing", "angle": "a 1 percent fee can cost six figures over decades"},
+    {"topic": "dollar cost averaging", "pillar": "investing", "angle": "how consistency beats market timing stress"},
+    {"topic": "S&P 500 vs total market", "pillar": "investing", "angle": "when broad diversification quietly wins"},
+    {"topic": "HSA triple tax advantage", "pillar": "tax", "angle": "the one account with three tax benefits"},
+    {"topic": "backdoor Roth IRA", "pillar": "tax", "angle": "high earners can still access Roth growth"},
+    {"topic": "529 plan basics", "pillar": "investing", "angle": "small monthly deposits can reduce future student debt"},
+    {"topic": "401k vesting schedule", "pillar": "career_income", "angle": "how leaving a job too early can forfeit money"},
+    {"topic": "ESPP discount math", "pillar": "career_income", "angle": "when employee stock discounts are worth taking"},
+    {"topic": "job hopping salary growth", "pillar": "career_income", "angle": "why switching roles can outpace annual raises"},
+    {"topic": "raise vs bonus tax impact", "pillar": "tax", "angle": "why your bonus feels smaller than expected"},
+    {"topic": "W-4 withholding reset", "pillar": "tax", "angle": "the payroll setting that prevents surprise tax bills"},
+    {"topic": "capital gains tax basics", "pillar": "tax", "angle": "holding period can change what you owe"},
+    {"topic": "RMD rules explained", "pillar": "tax", "angle": "missing required withdrawals triggers costly penalties"},
+    {"topic": "credit utilization rule", "pillar": "debt", "angle": "keeping balances low can lift your score faster"},
+    {"topic": "balance transfer card math", "pillar": "debt", "angle": "when a 0 percent transfer actually saves money"},
+    {"topic": "APR vs APY", "pillar": "debt", "angle": "the hidden difference that changes total interest paid"},
+    {"topic": "sinking funds method", "pillar": "budgeting", "angle": "prevent big expenses from becoming new debt"},
+    {"topic": "zero based budgeting", "pillar": "budgeting", "angle": "give every dollar a job before the month starts"},
+    {"topic": "pay yourself first", "pillar": "budgeting", "angle": "automate savings before spending can steal it"},
+    {"topic": "biweekly payment strategy", "pillar": "debt", "angle": "extra payments can cut years off repayment"},
+    {"topic": "rent vs buy break-even", "pillar": "budgeting", "angle": "the timeline that decides which is cheaper"},
+    {"topic": "insurance deductible strategy", "pillar": "budgeting", "angle": "matching deductible to emergency fund lowers risk"},
+    {"topic": "financial independence number", "pillar": "investing", "angle": "the simple math to estimate your freedom target"},
+    {"topic": "cash flow review habit", "pillar": "budgeting", "angle": "a 10-minute weekly check that prevents money leaks"},
+    {"topic": "401k loan risks", "pillar": "debt", "angle": "borrowing from retirement can cost more than it looks"},
 ]
 
 _CLIENT = None
@@ -374,7 +401,7 @@ def _loop_ending_line(script: str) -> str:
     # Referencing the hook number again in the loop ending provides no new curiosity trigger.
     all_numbers = re.findall(r"\$?\d[\d,]*(?:\.\d+)?%?", _clean_script_text(script))
     mid_number = all_numbers[1] if len(all_numbers) >= 2 else (all_numbers[0] if all_numbers else "this")
-    return f"Replay this and lock in the {mid_number} math."
+    return f"Seriously, watch this again: the {mid_number} number hits different on second watch."
 
 
 def _enforce_loop_ending(script: str) -> str:
@@ -440,13 +467,30 @@ def _repair_hook_opening(script: str, reason: str) -> str:
         return cleaned
 
     first_num = _extract_first_number(cleaned)
+    is_percent = first_num.endswith("%")
+    is_dollar = first_num.startswith("$")
     # Keep additions short and natural to avoid obvious AI-repair artifacts.
     if missing_pain and missing_consequence:
-        repaired_hook = f"{first_num} of people lose money and pay for it over years."
+        if is_dollar:
+            repaired_hook = f"{first_num} you lose early can cost you for years."
+        elif is_percent:
+            repaired_hook = f"{first_num} of people lose money and pay for it over years."
+        else:
+            repaired_hook = f"{first_num} people lose money and pay for it over years."
     elif missing_pain:
-        repaired_hook = f"{first_num} of people lose free money fast."
+        if is_dollar:
+            repaired_hook = f"{first_num} you lose early is hard to recover."
+        elif is_percent:
+            repaired_hook = f"{first_num} of people lose free money fast."
+        else:
+            repaired_hook = f"{first_num} people lose free money fast."
     else:
-        repaired_hook = f"{first_num} of people leave money unclaimed, and that costs them over years."
+        if is_dollar:
+            repaired_hook = f"{first_num} left unclaimed costs you for years."
+        elif is_percent:
+            repaired_hook = f"{first_num} of people leave money unclaimed, and that costs them over years."
+        else:
+            repaired_hook = f"{first_num} people leave money unclaimed, and that costs them over years."
 
     remainder = " ".join(sentences[1:]).strip()
     return f"{repaired_hook} {remainder}".strip()
@@ -478,24 +522,69 @@ def _trim_script_to_max_words(script: str, max_words: int = MAX_WORDS) -> str:
 
 
 def _pad_script_to_min_words(script: str, min_words: int = MIN_WORDS) -> str:
-    """Append concise natural filler until script meets minimum word count."""
+    """Append concise, varied filler until script meets minimum word count."""
     text = str(script or "").strip()
     if not text:
         return text
-    words = _word_count(text)
-    if words >= min_words:
+    if _word_count(text) >= min_words:
         return text
 
     if text[-1] not in ".!?":
         text += "."
-    needed = min_words - words
-    if needed <= 4:
-        extra = "Start today and track weekly."
-    elif needed <= 8:
-        extra = "Start today, automate one transfer, and track this weekly."
-    else:
-        extra = "Start today, automate one transfer, and track this number every single week."
-    return f"{text} {extra}".strip()
+
+    lower = _clean_script_text(text).lower()
+    focus = "money plan"
+    focus_hints = [
+        ("debt payoff", ("debt", "interest", "credit card", "loan", "apr")),
+        ("tax setup", ("tax", "irs", "withholding", "deduction", "refund")),
+        ("investing plan", ("invest", "index", "ira", "401k", "portfolio", "returns")),
+        ("budget system", ("budget", "spending", "expenses", "savings", "cash flow")),
+        ("income strategy", ("salary", "raise", "career", "income", "job")),
+    ]
+    for focus_name, terms in focus_hints:
+        if any(term in lower for term in terms):
+            focus = focus_name
+            break
+
+    short_options = [
+        "Start today and check it next week.",
+        "Do this now and review your numbers weekly.",
+        "Set this up today and stay consistent.",
+        "Take one step today and keep it simple.",
+    ]
+    medium_options = [
+        "Start today, automate one move, and review it every week.",
+        "Set this up now, then track progress every payday.",
+        "Do one action today and keep your plan on autopilot each week.",
+        "Make this move now and check your progress every Friday.",
+    ]
+    long_options = [
+        "Start today, automate one transfer, and protect your {focus} before extra spending takes over.",
+        "Do this now, lock in one recurring action, and review your {focus} every week without skipping.",
+        "Make this move today, repeat it weekly, and let your {focus} compound instead of drifting.",
+        "Set this up right now, keep it automatic, and track your {focus} every single week.",
+    ]
+
+    for _ in range(4):
+        current_words = _word_count(text)
+        if current_words >= min_words:
+            break
+        needed = min_words - current_words
+        if needed <= 4:
+            pool = short_options
+        elif needed <= 9:
+            pool = medium_options
+        else:
+            pool = long_options
+
+        seed = sum(ord(ch) for ch in _clean_script_text(text)) + needed * 17
+        idx = seed % len(pool)
+        extra = pool[idx].format(focus=focus)
+        if extra.lower() in text.lower():
+            extra = pool[(idx + 1) % len(pool)].format(focus=focus)
+        text = f"{text} {extra}".strip()
+
+    return text
 
 
 def _fit_script_word_budget(script: str, min_words: int = MIN_WORDS, max_words: int = MAX_WORDS) -> str:
@@ -588,8 +677,26 @@ def _finalize_short_payload(data: dict, topic: dict) -> dict:
     data["pillar"] = topic["pillar"]
 
     description = str(data.get("description", "")).strip()
+    # Keep mobile preview readable: remove leading hashtag spam if model emits it.
+    description = re.sub(r"^(?:\s*#[A-Za-z][A-Za-z0-9_]+\s*)+", "", description).strip()
     if "Educational only. Not financial advice." not in description:
         description = (description + " ⚠️ Educational only. Not financial advice.").strip()
+    # Append hashtags to description text so YouTube indexes them for hashtag-feed discovery.
+    # YouTube's `tags` API field is invisible metadata; only in-description hashtags appear
+    # in the hashtag feed (#Shorts, #PersonalFinance, etc.).
+    hashtags = data.get("hashtags") or []
+    if isinstance(hashtags, list) and hashtags:
+        ht_parts: list[str] = []
+        for h in hashtags[:15]:
+            tag = " ".join(str(h or "").split()).strip()
+            if not tag:
+                continue
+            if not tag.startswith("#"):
+                tag = "#" + tag
+            if tag not in ht_parts:
+                ht_parts.append(tag)
+        if ht_parts:
+            description = description + "\n\n" + " ".join(ht_parts)
     data["description"] = description
     return data
 
@@ -935,8 +1042,8 @@ PILLAR: {topic["pillar"]}
 {retention_block}
 
 FORMAT RULES:
-- Total voiceover: 45–55 seconds (MINIMUM 110 words, TARGET 120–130 words, MAXIMUM 140 words at 2.5 words/sec)
-- Count your words before finalising — scripts under 110 words will be rejected
+- Total voiceover: 45–55 seconds (MINIMUM {MIN_WORDS} words, TARGET {MIN_WORDS + 5}–{MAX_WORDS - 2} words, MAXIMUM {MAX_WORDS} words at ~2.5 words/sec)
+- Count your words before finalising — scripts under {MIN_WORDS} words will be rejected
 - The VERY FIRST spoken token must contain a number or dollar amount
 - The first 1.2 seconds must include: (1) number, (2) pain/problem, (3) consequence if ignored
 - Use this 3-beat flow only: SHOCK NUMBER -> SIMPLE MATH PROOF -> ACTION STEP
@@ -969,12 +1076,12 @@ Return ONLY this JSON, no explanation:
     "<title option 7>",
     "<title option 8>"
   ],
-  "voiceover_script": "<full spoken script, 110–140 words, with [PAUSE] markers. First word must be a number or shocking fact.>",
+  "voiceover_script": "<full spoken script, {MIN_WORDS}–{MAX_WORDS} words, with [PAUSE] markers. First word must be a number or shocking fact.>",
   "overlays": [
     {{"type": "hook_number", "text": "<big stat>", "start_word": 0, "duration_s": 4.0}},
     {{"type": "label", "text": "<short phrase>", "start_word": 15, "duration_s": 2.5}},
     {{"type": "comparison", "left": "<before>", "right": "<after>", "start_word": 60, "duration_s": 4.0}},
-    {{"type": "cta", "text": "Follow for more money tips", "start_word": 120, "duration_s": 5.0}}
+    {{"type": "cta", "text": "Follow for more money tips", "start_word": 100, "duration_s": 5.0}}
   ],
   "stat_citations": ["<short source label 1>", "<short source label 2 optional>"],
   "description": "<2-3 sentence YouTube description — no disclaimer, no hashtags>",
@@ -1036,7 +1143,7 @@ def generate(
 
         valid, reason = _is_valid_short_shape(data, topic)
         if not valid:
-            if not valid and "hook does not start with a numeric token" in reason:
+            if "hook does not start with a numeric token" in reason:
                 numeric_script = _ensure_numeric_opening(data.get("voiceover_script", ""), topic=topic)
                 if numeric_script != data.get("voiceover_script", ""):
                     _apply_script_update(data, numeric_script)
@@ -1083,9 +1190,9 @@ def generate(
 
         data = _finalize_short_payload(data, topic)
 
-        _save_short_to_memory(topic["topic"], script)
+        _save_short_to_memory(topic["topic"], data["voiceover_script"])
         logger.info("Short script generated: %d words, %d overlays",
-                    _word_count(script), len(data.get("overlays", [])))
+                    _word_count(data["voiceover_script"]), len(data.get("overlays", [])))
         return data
 
     raise RuntimeError("Short script generation failed — all attempts exhausted")

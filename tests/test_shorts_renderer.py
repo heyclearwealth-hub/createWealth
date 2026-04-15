@@ -46,3 +46,26 @@ def test_deoverlap_keeps_semantic_tail_label_but_drops_generic_tail_label():
     kept_texts = [ov.get("text", "") for ov in cleaned if ov.get("type") == "label"]
     assert "REAL COST" not in kept_texts
     assert "HIGH INTEREST FIRST" in kept_texts
+
+
+def test_make_spoken_caption_image_falls_back_without_timestamps():
+    words = "this is a simple caption fallback check".split()
+    img = sr._make_spoken_caption_image(words, [], t_mid=1.2)
+    assert img.getbbox() is not None
+
+
+def test_make_spoken_caption_image_stays_blank_before_audio_in_wps_fallback():
+    words = "this is a simple caption fallback check".split()
+    img = sr._make_spoken_caption_image(words, [], t_mid=0.05)
+    assert img.getbbox() is None
+
+
+def test_spoken_words_ignores_pause_markers():
+    words = sr._spoken_words("Save [PAUSE] more money now.")
+    assert words == ["Save", "more", "money", "now"]
+
+
+def test_plain_text_proof_tag_is_centered_banner():
+    overlay = {"type": "proof_tag", "text": "Educational only. Not advice.", "plain_text": True}
+    img = sr._make_overlay_image(overlay)
+    assert img.getbbox() is not None

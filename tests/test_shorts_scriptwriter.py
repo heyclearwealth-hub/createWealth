@@ -1,5 +1,7 @@
 """Unit tests for shorts_scriptwriter hook validation behavior."""
 
+import re
+
 import pipeline.shorts_scriptwriter as sw
 
 
@@ -27,6 +29,13 @@ def test_repair_hook_opening_injects_consequence_terms():
     assert reason == "ok"
 
 
+def test_repair_hook_opening_handles_dollar_number_without_bad_grammar():
+    script = "$500 mistake can delay your goals if you ignore this."
+    repaired = sw._repair_hook_opening(script, "hook missing pain framing in opening beat")
+    assert "$500 of people" not in repaired
+    assert "$500 you lose early" in repaired
+
+
 def test_trim_script_to_max_words_caps_length():
     script = " ".join(["word"] * 160)
     trimmed = sw._trim_script_to_max_words(script, max_words=140)
@@ -40,10 +49,18 @@ def test_pad_script_to_min_words_reaches_floor():
     assert sw._word_count(padded) >= 110
 
 
+def test_pad_script_to_min_words_varies_with_topic_context():
+    debt_script = "Pay your high interest debt first."
+    tax_script = "Fix your W-4 withholding now."
+    debt_padded = sw._pad_script_to_min_words(debt_script, min_words=116)
+    tax_padded = sw._pad_script_to_min_words(tax_script, min_words=116)
+    assert debt_padded != tax_padded
+
+
 def test_ensure_numeric_opening_rewrites_when_missing_number():
     script = "Most people ignore this rule and lose money over time. Build an emergency fund now."
     fixed = sw._ensure_numeric_opening(script, topic={"topic": "emergency fund rule"})
-    assert sw._first_token(fixed)[0].isdigit()
+    assert re.search(r"\d", sw._first_token(fixed))
     assert "emergency fund rule" in fixed.lower()
 
 

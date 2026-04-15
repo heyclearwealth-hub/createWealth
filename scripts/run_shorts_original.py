@@ -15,6 +15,8 @@ Environment variables required:
   ELEVENLABS_API_KEY
   YOUTUBE_CLIENT_ID, YOUTUBE_CLIENT_SECRET, YOUTUBE_REFRESH_TOKEN  (unless --dry-run)
 """
+from __future__ import annotations
+
 import argparse
 import json
 import logging
@@ -45,26 +47,7 @@ logger = logging.getLogger("__main__")
 
 WORKSPACE = Path("workspace")
 SHORT_VO_PATH = WORKSPACE / "short_voiceover.mp3"
-USED_TOPICS_FILE = Path("data/short_topics_used.json")
 RETENTION_FEEDBACK_FILE = Path("data/retention_feedback.json")
-
-
-def _load_used_topics() -> list[str]:
-    if not USED_TOPICS_FILE.exists():
-        return []
-    with USED_TOPICS_FILE.open() as f:
-        return json.load(f).get("topics", [])
-
-
-def _save_used_topic(topic: str) -> None:
-    used = _load_used_topics()
-    if topic not in used:
-        used.append(topic)
-    if len(used) > 30:
-        used = used[-30:]
-    USED_TOPICS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with USED_TOPICS_FILE.open("w") as f:
-        json.dump({"topics": used}, f)
 
 
 def _load_retention_feedback() -> dict | None:
@@ -128,13 +111,15 @@ def main() -> None:
             {"topic": args.topic, "pillar": "investing", "angle": args.topic},
         )
     else:
-        topic_match = None  # shorts_scriptwriter will pick automatically
+        topic_match = None  # shorts_scriptwriter will pick automatically via last_shorts.json
 
     # ── 2. Generate script ───────────────────────────────────────────────────
+    # Topic deduplication is fully handled inside generate_script via data/last_shorts.json
+    # (timestamp-aware, 120-topic memory, TOPIC_COOLDOWN_DAYS cooldown).
+    # No separate used-topics list is needed here.
     logger.info("Generating Short script...")
     script_data = generate_script(
         topic=topic_match,
-        used_topics=_load_used_topics(),
         retention_feedback=_load_retention_feedback(),
     )
     _vo_text = script_data.get("voiceover_script", "")
@@ -151,6 +136,7 @@ def main() -> None:
         pillar=script_data.get("pillar", ""),
     )
     logger.info("Thumbnails ready: %d files", len(thumb_paths))
+    selected_thumbnail = str(thumb_paths[0]) if thumb_paths else ""
 
     # ── 3. Generate voiceover (with timestamps when available) ───────────────
     logger.info("Generating voiceover...")
@@ -194,6 +180,7 @@ def main() -> None:
         "slug": script_data["topic"].lower().replace(" ", "-"),
         "hook_summary": title,
         "thumbnail_concept": title[:50],
+        "thumbnail_path": selected_thumbnail,
         "stat_citations": [],
         "pillar_playlist_bridge": "",
     }
@@ -211,8 +198,6 @@ def main() -> None:
         video_url = upload(upload_payload, video_path=video_path)
         logger.info("Short uploaded: %s", video_url)
 
-    # ── 7. Save topic to used list ───────────────────────────────────────────
-    _save_used_topic(script_data["topic"])
     logger.info("Done.")
 
 

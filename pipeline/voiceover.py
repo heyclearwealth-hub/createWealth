@@ -30,11 +30,14 @@ TTS_SETTINGS = {
 
 
 def _clean_script(script: str) -> str:
-    """Strip stage directions like [PAUSE], [STAT: ...] from spoken text."""
+    """Convert stage markers into natural spoken pauses and remove non-spoken tags."""
     import re
-    text = re.sub(r"\[PAUSE\]", " ", script)
+    text = str(script or "")
+    # Keep audible pacing at hook beats by converting [PAUSE] into a natural pause.
+    text = re.sub(r"\[PAUSE\]", " ... ", text)
     text = re.sub(r"\[STAT:[^\]]*\]", "", text)
     text = re.sub(r"\s{2,}", " ", text)
+    text = re.sub(r"\s+([,.;:!?])", r"\1", text)
     return text.strip()
 
 

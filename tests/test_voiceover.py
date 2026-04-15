@@ -1,6 +1,6 @@
-"""Unit tests for voiceover timestamp parsing."""
+"""Unit tests for voiceover cleaning and timestamp parsing."""
 
-from pipeline.voiceover import _extract_word_start_times
+from pipeline.voiceover import _clean_script, _extract_word_start_times
 
 
 def test_extract_word_start_times_handles_contractions():
@@ -15,3 +15,10 @@ def test_extract_word_start_times_handles_contractions():
     word_times = _extract_word_start_times(alignment, text)
     assert len(word_times) == 3
     assert word_times[0] == 0.0
+
+
+def test_clean_script_keeps_pause_and_removes_stat_marker():
+    script = "Save first [PAUSE] then invest [STAT: source note]."
+    cleaned = _clean_script(script)
+    assert "[STAT:" not in cleaned
+    assert "..." in cleaned

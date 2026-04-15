@@ -13,6 +13,8 @@ Unit costs (approximate):
   search.list                       ~100
   youtubeAnalytics.reports.query      ~1
 """
+from __future__ import annotations
+
 import json
 import logging
 import os

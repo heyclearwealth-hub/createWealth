@@ -142,6 +142,8 @@ def upload(pipeline_json: dict, video_path: Path = OUTPUT_PATH) -> str:
     title = titles[default_idx]
     description_hook = candidates.get("description_hook", "")
     description = str(pipeline_json.get("description", ""))
+    thumbnail_path_raw = str(pipeline_json.get("thumbnail_path", "") or "").strip()
+    thumbnail_path = Path(thumbnail_path_raw) if thumbnail_path_raw else None
     full_description = ((description_hook + "\n\n") if description_hook else "") + description + AI_DISCLOSURE_FOOTER
     # Warn if title and description hook are near-identical (wastes hook's click-through value).
     if description_hook and title:
@@ -182,6 +184,7 @@ def upload(pipeline_json: dict, video_path: Path = OUTPUT_PATH) -> str:
         "playlist_id": playlist_id,
         "slug": pipeline_json.get("slug", ""),
         "video_path": str(video_path),
+        "thumbnail_path": str(thumbnail_path) if thumbnail_path else "",
     }
 
     if DRY_RUN:
@@ -252,6 +255,21 @@ def upload(pipeline_json: dict, video_path: Path = OUTPUT_PATH) -> str:
             logger.info("Added to playlist %s", playlist_id)
         except Exception as exc:
             logger.error("Playlist add failed for video %s (playlist %s): %s", video_id, playlist_id, exc)
+
+    # Apply custom thumbnail when available.
+    if thumbnail_path and thumbnail_path.exists():
+        try:
+            quota_guard.assert_budget("thumbnails.set")
+            yt.thumbnails().set(
+                videoId=video_id,
+                media_body=MediaFileUpload(str(thumbnail_path), mimetype="image/png"),
+            ).execute()
+            quota_guard.charge("thumbnails.set")
+            logger.info("Custom thumbnail applied: %s", thumbnail_path)
+        except Exception as exc:
+            logger.error("Thumbnail set failed for video %s (%s): %s", video_id, thumbnail_path, exc)
+    elif thumbnail_path:
+        logger.warning("Thumbnail path provided but file not found: %s", thumbnail_path)
 
     _record_upload(video_id, pipeline_json, title, candidates, default_idx)
     return video_id

@@ -8,6 +8,8 @@ shorts_renderer.py — Renders a YouTube Short (9:16 vertical) using:
 
 Output: workspace/output/short_original.mp4
 """
+from __future__ import annotations
+
 import json
 import logging
 import math
@@ -16,6 +18,7 @@ import random
 import re
 import shutil
 import subprocess
+import threading
 import time
 from functools import lru_cache
 from pathlib import Path
@@ -40,7 +43,7 @@ BG_CADENCE_S = 0.5      # background refresh cadence for segment generation
 BG_MIN_CUT_S = 1.5
 BG_MAX_CUT_S = 3.0
 BG_ABS_MAX_SHOT_S = 4.0
-BG_TARGET_CLIPS = 4
+BG_TARGET_CLIPS = 6
 BG_MIN_SOURCES = 2
 BG_MAX_PER_QUERY = 1
 
@@ -71,6 +74,12 @@ GENERIC_LABEL_TEXTS = {
     "REAL IMPACT",
     "THE ACTION",
 }
+
+LABEL_ACCENT_COLORS = [
+    (255, 220, 50, 255),   # brand yellow
+    (210, 236, 255, 255),  # cool blue
+    (255, 255, 255, 255),  # neutral white
+]
 
 # Import pillar gradients from thumbnail_gen to keep a single source of truth.
 # New pillars added there will automatically apply here too.
@@ -219,7 +228,9 @@ def _draw_multiline_centered(
 
 
 def _spoken_words(script_text: str) -> list[str]:
-    return re.findall(r"[A-Za-z0-9$%']+", str(script_text or ""))
+    # Remove stage markers like [PAUSE] so caption indexing matches spoken audio.
+    cleaned = re.sub(r"\[[^\]]+\]", " ", str(script_text or ""))
+    return re.findall(r"[A-Za-z0-9$%']+", cleaned)
 
 
 def _active_word_idx(word_timestamps: list[float], t: float) -> int | None:
@@ -246,8 +257,9 @@ def _caption_slice(words: list[str], active_idx: int, window: int = CAPTION_WIND
 
 def _make_spoken_caption_image(
     words: list[str],
-    word_timestamps: list[float],
+    word_timestamps: list[float] | None,
     t_mid: float,
+    y_ratio: float = 0.76,
     w: int = SHORT_W,
     h: int = SHORT_H,
 ):
@@ -256,12 +268,17 @@ def _make_spoken_caption_image(
     """
     from PIL import Image, ImageDraw
 
-    if not words or not word_timestamps:
+    if not words:
         return Image.new("RGBA", (w, h), (0, 0, 0, 0))
 
-    active_idx = _active_word_idx(word_timestamps, t_mid)
-    if active_idx is None:
-        return Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    if word_timestamps:
+        active_idx = _active_word_idx(word_timestamps, t_mid)
+        if active_idx is None:
+            return Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    else:
+        # Fallback when TTS alignment is unavailable: approximate active word from WPS.
+        # Start captions one token later so word 0 is not highlighted before speech begins.
+        active_idx = min(int(t_mid * WPS) - 1, len(words) - 1)
 
     token_slice = _caption_slice(words, active_idx)
     if not token_slice:
@@ -289,7 +306,7 @@ def _make_spoken_caption_image(
 
     line_h = _text_height(draw, "Ag", font)
     total_h = len(lines) * line_h + (len(lines) - 1) * 12
-    y0 = int(h * 0.74)
+    y0 = int(h * y_ratio)
     box_pad_x = 26
     box_pad_y = 18
     draw.rounded_rectangle(
@@ -334,14 +351,15 @@ def _make_background_image(pillar: str = "investing"):
     bg = _make_gradient_background(top, bottom).convert("RGBA")
     draw = ImageDraw.Draw(bg)
     font = _get_font(46)
-    wm_text = "ClearWealth"
+    wm_text = os.environ.get("CHANNEL_BRAND_NAME", "ClearWealth")
     wm_w = _text_width(draw, wm_text, font)
     wm_x = (SHORT_W - wm_w) // 2
     wm_y = int(SHORT_H * 0.05)
     # Dark backing rect improves legibility on any background
     pad = 8
+    wm_h = _text_height(draw, wm_text, font)
     draw.rounded_rectangle(
-        [(wm_x - pad, wm_y - pad // 2), (wm_x + wm_w + pad, wm_y + 46 + pad // 2)],
+        [(wm_x - pad, wm_y - pad // 2), (wm_x + wm_w + pad, wm_y + wm_h + pad // 2)],
         radius=8, fill=(0, 0, 0, 108),
     )
     draw.text((wm_x, wm_y), wm_text, font=font, fill=(255, 255, 255, 180))
@@ -467,7 +485,7 @@ def _fetch_pexels_clips(
                     if dest.exists():
                         dest.unlink()
                     if attempt < 2:
-                        time.sleep(5)
+                        time.sleep(1)
             if downloaded:
                 clips.append(dest)
                 logger.info("Downloaded Pexels bg clip %d/%d: %s (query=%s)", len(clips), target_count, dest, query)
@@ -629,7 +647,7 @@ def _build_background_frame(
         zoom = 1.04 + (0.015 * math.sin(t_mid * 0.55))
         scaled_w = int(SHORT_W * zoom)
         scaled_h = int(SHORT_H * zoom)
-        resized = base.resize((scaled_w, scaled_h), Image.BICUBIC)
+        resized = base.resize((scaled_w, scaled_h), Image.Resampling.BICUBIC)
         offset_x = int((scaled_w - SHORT_W) / 2 + math.sin(t_mid * 0.31) * 14)
         offset_y = int((scaled_h - SHORT_H) / 2 + math.cos(t_mid * 0.27) * 22)
         left = max(0, min(offset_x, scaled_w - SHORT_W))
@@ -646,7 +664,8 @@ def _label_card_height(text: str, w: int = SHORT_W) -> int:
     """Return the pixel height of the card that _make_overlay_image would render for a label."""
     from PIL import Image, ImageDraw
     draw = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
-    lines, font = _wrap_fit_lines(draw, text, max_width=int(w * 0.78), start_size=66, min_size=34, max_lines=2)
+    # Parameters must match _make_overlay_image's label branch exactly.
+    lines, font = _wrap_fit_lines(draw, text, max_width=int(w * 0.76), start_size=60, min_size=32, max_lines=2)
     block_h = sum(_text_height(draw, ln, font) for ln in lines) + 8 * max(0, len(lines) - 1)
     return block_h + 18 * 2  # pad = 18
 
@@ -704,15 +723,36 @@ def _make_overlay_image(overlay: dict, w: int = SHORT_W, h: int = SHORT_H, label
         draw.rounded_rectangle(
             [(x0, y0), (x0 + card_w, y0 + block_h + pad * 2)], radius=16, fill=(255, 255, 255, 28)
         )
-        _draw_multiline_centered(draw, lines, y0 + pad, font, (255, 255, 255, 255), w, gap=8)
+        accent_idx = (sum(ord(ch) for ch in text) % len(LABEL_ACCENT_COLORS)) if text else 2
+        accent = LABEL_ACCENT_COLORS[accent_idx]
+        _draw_multiline_centered(draw, lines, y0 + pad, font, accent, w, gap=8)
 
     elif otype == "proof_tag":
         text = _clean_text(overlay.get("text", "SOURCE"))
         if overlay.get("plain_text", False):
-            label = text[:74]
+            lines, font = _wrap_fit_lines(
+                draw,
+                text[:96],
+                max_width=int(w * 0.90),
+                start_size=42,
+                min_size=30,
+                max_lines=2,
+            )
+            block_h = sum(_text_height(draw, ln, font) for ln in lines) + 8 * max(0, len(lines) - 1)
+            pad = 16
+            card_w = int(w * 0.92)
+            x0 = (w - card_w) // 2
+            y0 = int(h * 0.10)
+            draw.rounded_rectangle(
+                [(x0, y0), (x0 + card_w, y0 + block_h + pad * 2)],
+                radius=14,
+                fill=(0, 0, 0, 205),
+            )
+            _draw_multiline_centered(draw, lines, y0 + pad, font, (232, 240, 255, 248), w, gap=8)
+            return img
         else:
             label = f"SOURCE: {text}"[:74]
-        font = _get_font(26)
+        font = _get_font(32)
         pad_x, pad_y = 16, 10
         tw = _text_width(draw, label, font)
         th = _text_height(draw, label, font)
@@ -743,7 +783,7 @@ def _make_overlay_image(overlay: dict, w: int = SHORT_W, h: int = SHORT_H, label
         lines, font = _wrap_fit_lines(draw, text, max_width=int(w * 0.80), start_size=58, min_size=32, max_lines=2)
         block_h = sum(_text_height(draw, ln, font) for ln in lines) + 8 * max(0, len(lines) - 1)
         pad = 24
-        y0 = int(h * 0.76)
+        y0 = int(h * 0.80)
         card_w = int(w * 0.84)
         x0 = (w - card_w) // 2
         draw.rounded_rectangle(
@@ -758,21 +798,37 @@ def _make_overlay_image(overlay: dict, w: int = SHORT_W, h: int = SHORT_H, label
 # Overlay helpers
 # ---------------------------------------------------------------------------
 
-_wps_fallback_warned: bool = False  # deduplicate per-process; reset per render via render()
+# Per-thread flags for log deduplication — thread-safe across concurrent render() calls.
+_render_local = threading.local()
+
+
+def _get_wps_warned() -> bool:
+    return getattr(_render_local, "wps_fallback_warned", False)
+
+
+def _set_wps_warned(v: bool) -> None:
+    _render_local.wps_fallback_warned = v
+
+
+def _get_caption_warned() -> bool:
+    return getattr(_render_local, "caption_fallback_warned", False)
+
+
+def _set_caption_warned(v: bool) -> None:
+    _render_local.caption_fallback_warned = v
 
 
 def _ov_start(ov: dict) -> float:
     """Return overlay start time. Uses ElevenLabs word timestamp when available."""
-    global _wps_fallback_warned
     if "start_time_s" in ov:
         return float(ov["start_time_s"])
     start_word = int(ov.get("start_word", 0))
-    if not _wps_fallback_warned:
+    if not _get_wps_warned():
         logger.debug(
             "One or more overlays using WPS fallback for timing — "
             "ensure word_timestamps are available for precise sync"
         )
-        _wps_fallback_warned = True
+        _set_wps_warned(True)
     return round(start_word / WPS, 2)
 
 
@@ -1010,10 +1066,14 @@ def _quality_gate(output_path: Path, expected_duration: float) -> None:
     if abs(duration - expected_duration) > 3.0:
         raise RuntimeError(f"Duration drift: rendered {duration:.1f}s vs voiceover {expected_duration:.1f}s")
     mean_db, max_db = _mean_volume_db(output_path)
+    # Both checks are warnings — loudnorm can undershoot 2–4 dB on short clips
+    # and hard-crashing a good render would be worse than a slightly quiet video.
     if mean_db is not None and mean_db < -19.5:
-        raise RuntimeError(f"Audio too quiet: mean {mean_db:.1f} dB")
+        logger.warning(
+            "Audio mean %.1f dB below -19.5 floor after loudnorm — check TTS output quality",
+            mean_db,
+        )
     # YouTube loudness normalization flattens clipped/over-compressed audio.
-    # Warn if peak exceeds our safer -3 dBTP target.
     if max_db is not None and max_db > MIX_TRUE_PEAK_TARGET:
         logger.warning(
             "Audio peak %.1f dB exceeds -3 dBTP — may sound flat after YouTube loudness normalization",
@@ -1052,8 +1112,9 @@ def render(
        no -loop 1 inputs, no timeout risk.
     6. Mix voiceover + background music with loudnorm.
     """
-    global _wps_fallback_warned
-    _wps_fallback_warned = False  # reset so each render gets at most one WPS fallback warning
+    # Reset per-thread log-dedup flags so each render() call gets at most one warning.
+    _set_wps_warned(False)
+    _set_caption_warned(False)
 
     if not voiceover_path.exists():
         raise FileNotFoundError(f"Voiceover not found: {voiceover_path}")
@@ -1128,11 +1189,12 @@ def render(
     overlays = _inject_cadence_labels(overlays, vo_duration, pillar=pillar)
     overlays = _sanitize_overlays(overlays, vo_duration, word_timestamps)  # re-sort + re-clamp after injection
     overlays = _deoverlap_label_overlays(overlays, vo_duration)
+    _overlays_after_cadence = len(overlays)
     logger.info(
-        "Overlays: %d from script → %d cadence-injected → %d total after sanitize",
+        "Overlays: %d from script → +%d cadence injected → %d after deoverlap",
         _overlays_before_cadence,
-        len(overlays) - _overlays_before_cadence,
-        len(overlays),
+        _overlays_after_cadence - _overlays_before_cadence,
+        _overlays_after_cadence,
     )
 
     # Step 3: inject proof tags AFTER sanitize (proof_tag is not in the sanitize allowlist)
@@ -1147,15 +1209,22 @@ def render(
         for ov in overlays
     )
     if has_financial_claim:
-        disclaimer_start = max(0.0, round(vo_duration - 2.2, 2))
+        # Place disclaimer before the CTA window starts so they never co-render.
+        # CTA fires at roughly vo_duration - CTA_SAFE_TAIL_S; we end the disclaimer
+        # 0.3s before that so there's a clean visual gap.
+        cta_start_approx = max(0.0, vo_duration - CTA_SAFE_TAIL_S)
+        disclaimer_end_target = cta_start_approx - 0.3
+        disclaimer_dur = 2.0
+        disclaimer_start = max(0.0, round(disclaimer_end_target - disclaimer_dur, 2))
         overlays.append({
             "type": "proof_tag",
             "text": "Educational only. Not advice.",
             "plain_text": True,
             "start_time_s": disclaimer_start,
-            "duration_s": 2.0,
+            "duration_s": disclaimer_dur,
         })
-        logger.info("Injected on-screen financial disclaimer at %.1fs", disclaimer_start)
+        logger.info("Injected on-screen financial disclaimer at %.1fs (ends before CTA at %.1fs)",
+                    disclaimer_start, cta_start_approx)
 
     overlays = _deoverlap_label_overlays(overlays, vo_duration)
 
@@ -1210,8 +1279,21 @@ def render(
 
         # Word-synced spoken captions (phrase-by-phrase highlight, active word in yellow)
         has_active_cta = any(ov.get("type") == "cta" for ov in active)
-        if word_timestamps and spoken_words_list and not has_active_cta:
-            caption_img = _make_spoken_caption_image(spoken_words_list, word_timestamps, t_mid)
+        has_active_label = bool(active_labels)
+        if spoken_words_list and not has_active_cta:
+            if not word_timestamps and not _get_caption_warned():
+                logger.warning(
+                    "Word-synced caption timestamps unavailable — using WPS caption fallback."
+                )
+                _set_caption_warned(True)
+            # Keep captions clear of active label cards.
+            caption_y = 0.82 if has_active_label else 0.76
+            caption_img = _make_spoken_caption_image(
+                spoken_words_list,
+                word_timestamps,
+                t_mid,
+                y_ratio=caption_y,
+            )
             frame = Image.alpha_composite(frame, caption_img)
 
         seg_path = seg_dir / f"seg_{i:03d}.png"
@@ -1277,6 +1359,13 @@ def render(
             raise RuntimeError(f"Short render failed:\n{result.stderr[-1000:]}")
     finally:
         shutil.rmtree(seg_dir, ignore_errors=True)
+        for frames_dir in work_dir.glob("bg_frames_*"):
+            shutil.rmtree(frames_dir, ignore_errors=True)
+        for clip_file in work_dir.glob("bg_raw_*.mp4"):
+            clip_file.unlink(missing_ok=True)
+        for clip_file in work_dir.glob("bg_processed_*.mp4"):
+            clip_file.unlink(missing_ok=True)
+        concat_file.unlink(missing_ok=True)
         logger.debug("Cleaned up segment frames: %s", seg_dir)
 
     if not output_path.exists() or output_path.stat().st_size < 50_000:

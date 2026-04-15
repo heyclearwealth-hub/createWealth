@@ -7,6 +7,8 @@ backgrounds + text overlays, which load faster and look cleaner at 9:16.
 The Pexels queries here are intentionally visual/scene-based (not thematic)
 since Pexels searches what a viewer would see on screen, not concepts.
 """
+from __future__ import annotations
+
 import json
 import logging
 import os
