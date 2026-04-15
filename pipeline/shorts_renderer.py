@@ -43,9 +43,9 @@ BG_CADENCE_S = 0.5      # background refresh cadence for segment generation
 BG_MIN_CUT_S = 1.5
 BG_MAX_CUT_S = 3.0
 BG_ABS_MAX_SHOT_S = 4.0
-BG_TARGET_CLIPS = 6
+BG_TARGET_CLIPS = 10
 BG_MIN_SOURCES = 2
-BG_MAX_PER_QUERY = 1
+BG_MAX_PER_QUERY = 2
 
 CAPTION_WINDOW_WORDS = 7
 MAX_CONCURRENT_LABELS = 1
@@ -233,6 +233,28 @@ def _spoken_words(script_text: str) -> list[str]:
     return re.findall(r"[A-Za-z0-9$%']+", cleaned)
 
 
+def _sentence_end_indices(script_text: str) -> set[int]:
+    """
+    Return the set of word indices after which a sentence break occurs.
+    Breaks are: [PAUSE] markers and sentence-ending punctuation (. ! ?) after a word.
+    """
+    text = str(script_text or "")
+    # Mark sentence breaks before stripping markers
+    text = re.sub(r"\[PAUSE\]", " __BRK__ ", text)
+    text = re.sub(r"(?<=[A-Za-z0-9])[.!?]+(?=\s|$)", " __BRK__", text)
+    # Remove all remaining bracket markers
+    text = re.sub(r"\[[^\]]+\]", " ", text)
+    word_idx = 0
+    ends: set[int] = set()
+    for token in text.split():
+        if token == "__BRK__":
+            if word_idx > 0:
+                ends.add(word_idx - 1)
+        elif re.search(r"[A-Za-z0-9$%']+", token):
+            word_idx += 1
+    return ends
+
+
 def _active_word_idx(word_timestamps: list[float], t: float) -> int | None:
     if not word_timestamps:
         return None
@@ -245,13 +267,27 @@ def _active_word_idx(word_timestamps: list[float], t: float) -> int | None:
     return idx
 
 
-def _caption_slice(words: list[str], active_idx: int, window: int = CAPTION_WINDOW_WORDS) -> list[tuple[str, int]]:
+def _caption_slice(
+    words: list[str],
+    active_idx: int,
+    window: int = CAPTION_WINDOW_WORDS,
+    sent_ends: "set[int] | None" = None,
+) -> list[tuple[str, int]]:
     if not words or active_idx < 0:
         return []
     start = max(0, active_idx - 2)
     end = min(len(words), start + window)
     if end - start < min(4, len(words)):
         start = max(0, end - window)
+
+    if sent_ends:
+        # Clamp start: don't reach back into a prior sentence
+        prev_break = max((b for b in sent_ends if b < active_idx), default=-1)
+        start = max(start, prev_break + 1)
+        # Clamp end: don't spill into the next sentence
+        next_break = min((b for b in sent_ends if b >= active_idx), default=len(words) - 1)
+        end = min(end, next_break + 1)  # include the sentence-final word
+
     return [(words[i], i) for i in range(start, end)]
 
 
@@ -262,6 +298,7 @@ def _make_spoken_caption_image(
     y_ratio: float = 0.76,
     w: int = SHORT_W,
     h: int = SHORT_H,
+    sent_ends: "set[int] | None" = None,
 ):
     """
     Word-synced caption strip. Highlights the active spoken word.
@@ -280,7 +317,7 @@ def _make_spoken_caption_image(
         # Start captions one token later so word 0 is not highlighted before speech begins.
         active_idx = min(int(t_mid * WPS) - 1, len(words) - 1)
 
-    token_slice = _caption_slice(words, active_idx)
+    token_slice = _caption_slice(words, active_idx, sent_ends=sent_ends)
     if not token_slice:
         return Image.new("RGBA", (w, h), (0, 0, 0, 0))
 
@@ -586,23 +623,28 @@ def _sample_bg_frame(frames: list[tuple[float, Path]], t: float) -> Path:
 def _build_bg_montage_plan(duration_s: float, source_count: int, seed_hint: str = "") -> list[tuple[float, float, int]]:
     """
     Build pacing plan: frequent cuts (1.5s–3.0s), never longer than 4s.
+    Avoids repeating the same source within the last 2 shots to prevent visible recycling.
     Returns list of (start, end, source_idx).
     """
     if source_count <= 0:
         return []
     rng = random.Random(f"{seed_hint}:{duration_s:.2f}:{source_count}")
     t = 0.0
-    prev_idx = -1
+    recent: list[int] = []   # tracks last min(2, source_count-1) used indices
+    avoid_n = min(2, max(1, source_count - 1))
     plan: list[tuple[float, float, int]] = []
     while t < duration_s:
         shot = min(rng.uniform(BG_MIN_CUT_S, BG_MAX_CUT_S), BG_ABS_MAX_SHOT_S, duration_s - t)
         choices = list(range(source_count))
-        if prev_idx in choices and len(choices) > 1:
-            choices.remove(prev_idx)
+        for prev in recent[-avoid_n:]:
+            if prev in choices and len(choices) > 1:
+                choices.remove(prev)
         idx = rng.choice(choices)
         plan.append((round(t, 3), round(t + shot, 3), idx))
         t += shot
-        prev_idx = idx
+        recent.append(idx)
+        if len(recent) > avoid_n:
+            recent.pop(0)
     return plan
 
 
@@ -1380,6 +1422,7 @@ def render(
     # (real footage or animated gradient) is composited on top via FFmpeg overlay,
     # eliminating the slideshow effect that plagued the old per-segment static frame approach.
     spoken_words_list = _spoken_words(script_data.get("voiceover_script", ""))
+    sent_ends = _sentence_end_indices(script_data.get("voiceover_script", ""))
     seg_dir = work_dir / "segments"
     seg_dir.mkdir(exist_ok=True)
     concat_lines: list[str] = []
@@ -1423,6 +1466,7 @@ def render(
                 word_timestamps,
                 t_mid,
                 y_ratio=caption_y,
+                sent_ends=sent_ends,
             )
             frame = Image.alpha_composite(frame, caption_img)
 
@@ -1489,7 +1533,7 @@ def render(
         "-pix_fmt", "yuv420p",
         "-profile:v", "high",
         "-g", "60",
-        "-c:a", "aac", "-b:a", "160k",
+        "-c:a", "aac", "-b:a", "160k", "-ac", "2",
         "-movflags", "+faststart",
         str(output_path),
     ]

@@ -65,6 +65,25 @@ def test_spoken_words_ignores_pause_markers():
     assert words == ["Save", "more", "money", "now"]
 
 
+def test_sentence_end_indices_pause_and_punctuation():
+    # "Save more" ends sentence at word 1 (PAUSE), "now" ends at word 2 (period)
+    script = "Save more. [PAUSE] Invest now."
+    ends = sr._sentence_end_indices(script)
+    # words: Save(0) more(1) . Invest(2) now(3) .
+    assert 1 in ends, f"Expected word 1 (more) to mark a sentence end, got {ends}"
+    assert 3 in ends, f"Expected word 3 (now) to mark a sentence end, got {ends}"
+
+
+def test_caption_slice_does_not_cross_sentence_boundary():
+    words = "one two three four five six seven eight nine ten".split()
+    # Sentence ends after word 4 ("five"), sentence 2 starts at word 5
+    sent_ends = {4}
+    # Active word is 5 (first word of second sentence) — start should not reach back before 5
+    result = sr._caption_slice(words, active_idx=5, sent_ends=sent_ends)
+    indices = [idx for _, idx in result]
+    assert all(i >= 5 for i in indices), f"Caption crossed sentence boundary: {result}"
+
+
 def test_plain_text_proof_tag_is_centered_banner():
     overlay = {"type": "proof_tag", "text": "Educational only. Not advice.", "plain_text": True}
     img = sr._make_overlay_image(overlay)
