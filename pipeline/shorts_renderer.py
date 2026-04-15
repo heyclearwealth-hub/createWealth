@@ -619,6 +619,126 @@ def _bg_source_for_time(plan: list[tuple[float, float, int]], t: float) -> tuple
     return idx, start
 
 
+def _build_gradient_bg_video(bg_img, vo_duration: float, work_dir: Path) -> Path:
+    """
+    Generate a smooth 30fps animated background video from the gradient PIL image.
+
+    Uses FFmpeg scale+crop with time-varying offsets to create a subtle Ken-Burns-style
+    pan/zoom that matches the Pillow animation formula.  Falls back to a static gradient
+    if the expression-based filter fails (older FFmpeg).
+    """
+    from PIL import Image
+
+    # Save a 1.15× upscaled gradient so panning never reveals black borders.
+    overscan_w = int(SHORT_W * 1.15)
+    overscan_h = int(SHORT_H * 1.15)
+    gradient_png = work_dir / "bg_gradient.png"
+    bg_img.convert("RGB").resize(
+        (overscan_w, overscan_h), Image.Resampling.BICUBIC
+    ).save(str(gradient_png))
+
+    bg_video = work_dir / "bg.mp4"
+    pad_x = (overscan_w - SHORT_W) // 2   # e.g. ~81px at 1080
+    pad_y = (overscan_h - SHORT_H) // 2   # e.g. ~144px at 1920
+    # Oscillation stays inside the padding so the crop never clips.
+    osc_x = int(pad_x * 0.75)
+    osc_y = int(pad_y * 0.75)
+
+    vf = (
+        f"scale={overscan_w}:{overscan_h}:flags=bilinear,"
+        f"crop={SHORT_W}:{SHORT_H}:"
+        f"'{pad_x}+sin(t*0.31)*{osc_x}':"
+        f"'{pad_y}+cos(t*0.27)*{osc_y}'"
+    )
+    cmd = [
+        _bin("ffmpeg"), "-y",
+        "-loop", "1", "-r", "30", "-i", str(gradient_png),
+        "-vf", vf,
+        "-t", f"{vo_duration + 1.0:.3f}",
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "20",
+        "-pix_fmt", "yuv420p",
+        str(bg_video),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    if result.returncode != 0:
+        logger.warning(
+            "Animated gradient bg failed (%s) — using static fallback",
+            result.stderr[-150:].strip(),
+        )
+        cmd_static = [
+            _bin("ffmpeg"), "-y",
+            "-loop", "1", "-r", "30", "-i", str(gradient_png),
+            "-vf", f"scale={SHORT_W}:{SHORT_H}",
+            "-t", f"{vo_duration + 1.0:.3f}",
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "20",
+            "-pix_fmt", "yuv420p",
+            str(bg_video),
+        ]
+        result2 = subprocess.run(cmd_static, capture_output=True, text=True, timeout=60)
+        if result2.returncode != 0:
+            raise RuntimeError(f"Static gradient bg also failed: {result2.stderr[-300:]}")
+    logger.info("Gradient bg video: %s", bg_video.name)
+    return bg_video
+
+
+def _build_montage_bg_video(
+    processed_clips: list[Path],
+    montage_plan: list[tuple[float, float, int]],
+    vo_duration: float,
+    work_dir: Path,
+) -> Path:
+    """
+    Concatenate processed Pexels clips into a single smooth background video
+    according to the montage plan (cut-style editing, no frame extraction needed).
+    """
+    seg_dir = work_dir / "bg_segs"
+    if seg_dir.exists():
+        shutil.rmtree(seg_dir, ignore_errors=True)
+    seg_dir.mkdir(exist_ok=True)
+
+    seg_paths: list[Path] = []
+    for i, (seg_start, seg_end, src_idx) in enumerate(montage_plan):
+        seg_dur = round(seg_end - seg_start, 3)
+        if seg_dur < 0.1:
+            continue
+        src = processed_clips[min(src_idx, len(processed_clips) - 1)]
+        seg_path = seg_dir / f"bg_seg_{i:03d}.mp4"
+        cmd = [
+            _bin("ffmpeg"), "-y",
+            "-ss", f"{seg_start:.3f}",
+            "-i", str(src),
+            "-t", f"{seg_dur:.3f}",
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "20",
+            "-pix_fmt", "yuv420p",
+            "-an",
+            str(seg_path),
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            logger.warning("bg_seg %d failed, skipping: %s", i, result.stderr[-80:].strip())
+            continue
+        seg_paths.append(seg_path)
+
+    if not seg_paths:
+        raise RuntimeError("No background segments generated from montage plan")
+
+    concat_txt = seg_dir / "bg_concat.txt"
+    concat_txt.write_text("\n".join(f"file '{p.resolve()}'" for p in seg_paths))
+
+    bg_video = work_dir / "bg.mp4"
+    cmd_cat = [
+        _bin("ffmpeg"), "-y",
+        "-f", "concat", "-safe", "0", "-i", str(concat_txt),
+        "-c:v", "copy",
+        str(bg_video),
+    ]
+    result_cat = subprocess.run(cmd_cat, capture_output=True, text=True, timeout=120)
+    if result_cat.returncode != 0:
+        raise RuntimeError(f"Montage concat failed: {result_cat.stderr[-300:]}")
+    logger.info("Montage bg video: %s (%d shots)", bg_video.name, len(seg_paths))
+    return bg_video
+
+
 def _build_background_frame(
     t_mid: float,
     gradient_img,           # RGBA PIL Image
@@ -1102,15 +1222,17 @@ def render(
     """
     Render a standalone YouTube Short.
 
-    Strategy: Pillow pre-compositing (fast, CI-safe)
-    ─────────────────────────────────────────────────
-    1. Build gradient background image (Pillow).
+    Strategy: smooth bg video + transparent overlay layer
+    ──────────────────────────────────────────────────────
+    1. Build smooth 30fps background video:
+       - Pexels available → montage of processed clips (real footage, no frame extraction).
+       - Fallback → animated gradient via FFmpeg scale+crop with time-varying pan offset.
     2. Sanitize script overlays; inject cadence labels into visual gaps.
-    3. Compute segment boundaries from all overlay start/end times.
-    4. For each segment, composite background + active overlays into a PNG (Pillow).
-    5. FFmpeg concat demuxer encodes the PNG sequence — no overlay filter graph,
-       no -loop 1 inputs, no timeout risk.
-    6. Mix voiceover + background music with loudnorm.
+    3. Compute segment boundaries from overlay start/end times + BG_CADENCE_S ticks.
+    4. For each segment, render OVERLAY-ONLY transparent RGBA PNGs (no background baked in).
+    5. FFmpeg composites overlay PNG sequence onto the smooth bg video via overlay filter,
+       giving true 30fps motion rather than the old 2fps slideshow effect.
+    6. Mix voiceover + optional sidechain-ducked background music with loudnorm.
     """
     # Reset per-thread log-dedup flags so each render() call gets at most one warning.
     _set_wps_warned(False)
@@ -1135,9 +1257,8 @@ def render(
     topic_slug = re.sub(r"[^a-z0-9]+", "-", script_data.get("topic", pillar).lower()).strip("-")
     bg_img = _make_background_image(pillar)
 
-    # Pexels background video — true montage pacing (3-6 clips, cuts every 1.5–3s)
-    bg_frames_sources: list | None = None
-    montage_plan: list | None = None
+    # Pexels background video — smooth montage (real 30fps footage, no frame extraction)
+    bg_video: Path | None = None
     if os.environ.get("PEXELS_API_KEY"):
         try:
             raw_clips = _fetch_pexels_clips(
@@ -1148,17 +1269,19 @@ def render(
                 script_text=str(script_data.get("voiceover_script", "")),
             )
             if raw_clips:
-                bg_frames_sources = []
+                processed_clips: list[Path] = []
                 for ci, clip in enumerate(raw_clips):
                     processed = _prepare_bg_video(clip, work_dir, vo_duration, tag=str(ci))
-                    frames = _extract_bg_frames(processed, work_dir, fps=BG_FRAME_FPS, tag=str(ci))
-                    bg_frames_sources.append(frames)
+                    processed_clips.append(processed)
                 montage_plan = _build_bg_montage_plan(
-                    vo_duration, len(bg_frames_sources), seed_hint=topic_slug
+                    vo_duration, len(processed_clips), seed_hint=topic_slug
+                )
+                bg_video = _build_montage_bg_video(
+                    processed_clips, montage_plan, vo_duration, work_dir
                 )
                 logger.info(
                     "Background montage ready: %d clips, %d shots",
-                    len(bg_frames_sources), len(montage_plan),
+                    len(processed_clips), len(montage_plan),
                 )
                 if len(raw_clips) < BG_MIN_SOURCES:
                     logger.warning(
@@ -1169,8 +1292,11 @@ def render(
                     )
         except Exception as exc:
             logger.warning("Background video unavailable, using gradient: %s", exc)
-            bg_frames_sources = None
-            montage_plan = None
+            bg_video = None
+
+    # Gradient animated background when Pexels is unavailable or failed
+    if bg_video is None:
+        bg_video = _build_gradient_bg_video(bg_img, vo_duration, work_dir)
 
     word_timestamps: list[float] = script_data.get("word_timestamps") or []
     if word_timestamps:
@@ -1249,7 +1375,10 @@ def render(
         t += BG_CADENCE_S
     events_sorted = sorted(events)
 
-    # Step 5: composite each segment frame with Pillow
+    # Step 5: render OVERLAY-ONLY transparent PNGs (background supplied by bg_video)
+    # Each PNG is pure RGBA with a fully transparent background. The smooth bg_video
+    # (real footage or animated gradient) is composited on top via FFmpeg overlay,
+    # eliminating the slideshow effect that plagued the old per-segment static frame approach.
     spoken_words_list = _spoken_words(script_data.get("voiceover_script", ""))
     seg_dir = work_dir / "segments"
     seg_dir.mkdir(exist_ok=True)
@@ -1268,7 +1397,8 @@ def render(
         active_labels = [ov for ov in all_active if ov.get("type") == "label"]
         active = active_non_labels + active_labels[:MAX_CONCURRENT_LABELS]
 
-        frame = _build_background_frame(t_mid, bg_img, bg_frames_sources, montage_plan=montage_plan)
+        # Transparent frame: overlays only, no background (background comes from bg_video)
+        frame = Image.new("RGBA", (SHORT_W, SHORT_H), (0, 0, 0, 0))
         label_next_y = int(SHORT_H * 0.68)
         for ov in active:
             if ov.get("type") == "label":
@@ -1297,7 +1427,7 @@ def render(
             frame = Image.alpha_composite(frame, caption_img)
 
         seg_path = seg_dir / f"seg_{i:03d}.png"
-        frame.convert("RGB").save(seg_path)
+        frame.save(seg_path)   # keep RGBA — alpha channel is composited by FFmpeg overlay
         concat_lines.append(f"file '{seg_path.resolve()}'\nduration {duration:.4f}")
 
     # FFmpeg concat demuxer: last entry repeated without a duration line
@@ -1307,42 +1437,54 @@ def render(
 
     concat_file = work_dir / "segments.txt"
     concat_file.write_text("\n".join(concat_lines))
-    logger.info("Composited %d segment frames via Pillow", len(events_sorted) - 1)
+    logger.info("Composited %d overlay segment frames via Pillow", len(events_sorted) - 1)
 
-    # Step 6: audio filter — sidechain ducking under voice + final limiter at -1.0 dBTP
-    # SHORT_MUSIC=0 disables background music (useful when music tone doesn't fit content).
+    # Step 6: FFmpeg encode
+    # Input layout:
+    #   0 — bg_video      (smooth 30fps background: Pexels montage or animated gradient)
+    #   1 — overlay PNGs  (transparent RGBA PNG sequence from concat demuxer)
+    #   2 — voiceover     (audio)
+    #   3 — bgmusic       (audio, optional)
+    #
+    # filter_complex:
+    #   [0:v][1:v]overlay  → composites overlay onto smooth background (fixes slideshow)
+    #   audio chain        → voiceover + optional sidechain-ducked music + loudnorm
     music_enabled = os.environ.get("SHORT_MUSIC", "1").lower() in {"1", "true", "yes"}
     if bgmusic_path.exists() and music_enabled:
+        # voiceover=input 2, bgmusic=input 3
         audio_filter = (
-            "[1:a]highpass=f=85,lowpass=f=12000,"
+            "[2:a]highpass=f=85,lowpass=f=12000,"
             "acompressor=threshold=-17dB:ratio=2.2:attack=15:release=180,"
             "volume=1.05,asplit=2[voice_main][voice_sc];"
-            "[2:a]volume=0.11[raw_music];"
-            # Sidechain compress: voice triggers music level reduction while speaking
+            "[3:a]volume=0.11[raw_music];"
             "[raw_music][voice_sc]sidechaincompress=threshold=0.015:ratio=6:attack=5:release=200[music_ducked];"
             "[voice_main][music_ducked]amix=inputs=2:duration=first[mix];"
             f"[mix]loudnorm=I={TARGET_LOUDNESS}:TP={MIX_TRUE_PEAK_TARGET}:LRA=7[a]"
         )
         audio_inputs = ["-i", str(voiceover_path), "-i", str(bgmusic_path)]
     else:
+        # voiceover=input 2
         audio_filter = (
-            "[1:a]highpass=f=85,lowpass=f=12000,"
+            "[2:a]highpass=f=85,lowpass=f=12000,"
             "acompressor=threshold=-17dB:ratio=2.2:attack=15:release=180:makeup=3,"
             f"loudnorm=I={TARGET_LOUDNESS}:TP={MIX_TRUE_PEAK_TARGET}:LRA=7[a]"
         )
         audio_inputs = ["-i", str(voiceover_path)]
 
-    # Step 6: FFmpeg encode — concat image sequence + audio only
-    # -vf is valid here: video comes from concat demuxer (not from filter_complex),
-    # while filter_complex handles audio only.
+    full_filter = (
+        f"[0:v]fps=30,setsar=1[bg_fps];"
+        f"[bg_fps][1:v]overlay=format=auto:shortest=1[v];"
+        f"{audio_filter}"
+    )
+
     cmd = [
         _bin("ffmpeg"), "-y",
-        "-f", "concat", "-safe", "0", "-i", str(concat_file),
-        *audio_inputs,
-        "-filter_complex", audio_filter,
-        "-map", "0:v",
+        "-i", str(bg_video),                                       # input 0: smooth bg
+        "-f", "concat", "-safe", "0", "-i", str(concat_file),     # input 1: overlay PNGs
+        *audio_inputs,                                              # inputs 2 (+ 3)
+        "-filter_complex", full_filter,
+        "-map", "[v]",
         "-map", "[a]",
-        "-vf", f"scale={SHORT_W}:{SHORT_H}:force_original_aspect_ratio=disable,fps=30,setsar=1",
         "-c:v", "libx264", "-preset", "fast", "-crf", "19",
         "-pix_fmt", "yuv420p",
         "-profile:v", "high",
@@ -1359,14 +1501,18 @@ def render(
             raise RuntimeError(f"Short render failed:\n{result.stderr[-1000:]}")
     finally:
         shutil.rmtree(seg_dir, ignore_errors=True)
-        for frames_dir in work_dir.glob("bg_frames_*"):
-            shutil.rmtree(frames_dir, ignore_errors=True)
+        # bg_segs/ created by _build_montage_bg_video
+        shutil.rmtree(work_dir / "bg_segs", ignore_errors=True)
         for clip_file in work_dir.glob("bg_raw_*.mp4"):
             clip_file.unlink(missing_ok=True)
         for clip_file in work_dir.glob("bg_processed_*.mp4"):
             clip_file.unlink(missing_ok=True)
+        for f in work_dir.glob("bg*.mp4"):
+            f.unlink(missing_ok=True)
+        for f in work_dir.glob("bg*.png"):
+            f.unlink(missing_ok=True)
         concat_file.unlink(missing_ok=True)
-        logger.debug("Cleaned up segment frames: %s", seg_dir)
+        logger.debug("Cleaned up segment frames and bg temp files: %s", work_dir)
 
     if not output_path.exists() or output_path.stat().st_size < 50_000:
         raise RuntimeError(f"Short output missing or too small: {output_path}")
