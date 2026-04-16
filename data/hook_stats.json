@@ -1,0 +1,283 @@
+{
+  "_comment": "Verified hook stats per topic. overlay_number = big text on screen. overlay_subtitle = short claim under number. hook_statement = full opening sentence for voiceover. Never change a stat without re-verifying the source.",
+  "compound interest": {
+    "overlay_number": "10 yrs",
+    "overlay_subtitle": "late costs 4x more saved",
+    "hook_statement": "Waiting 10 years to start investing forces you to save 4 times as much to reach the same goal.",
+    "source": "SEC Office of Investor Education — Compound Interest Calculator",
+    "source_short": "SEC Compound Math"
+  },
+  "Roth IRA basics": {
+    "overlay_number": "17%",
+    "overlay_subtitle": "of workers use a Roth IRA",
+    "hook_statement": "Only 17% of American workers contribute to a Roth IRA, and most are leaving tax-free growth behind.",
+    "source": "Investment Company Institute ICI 2023 Factbook",
+    "source_short": "ICI Factbook 2023"
+  },
+  "emergency fund rule": {
+    "overlay_number": "56%",
+    "overlay_subtitle": "can't cover a $1,000 emergency",
+    "hook_statement": "56% of Americans could not cover a $1,000 emergency expense without going into debt.",
+    "source": "Bankrate Annual Emergency Savings Report 2024",
+    "source_short": "Bankrate 2024"
+  },
+  "credit score quick wins": {
+    "overlay_number": "35%",
+    "overlay_subtitle": "of your score is one habit",
+    "hook_statement": "35% of your credit score is determined by a single habit: paying on time.",
+    "source": "FICO Score Factors — myFICO.com",
+    "source_short": "FICO Score Model"
+  },
+  "401k employer match": {
+    "overlay_number": "26%",
+    "overlay_subtitle": "miss free employer match",
+    "hook_statement": "26% of workers don't contribute enough to capture their full employer 401k match, leaving free money on the table.",
+    "source": "Vanguard How America Saves 2023",
+    "source_short": "Vanguard HAOW 2023"
+  },
+  "debt avalanche vs snowball": {
+    "overlay_number": "$2,100",
+    "overlay_subtitle": "avg yearly credit card interest",
+    "hook_statement": "The average American pays $2,100 a year in credit card interest — and most are using the wrong payoff method.",
+    "source": "Federal Reserve Consumer Credit Report 2024",
+    "source_short": "Federal Reserve 2024"
+  },
+  "salary negotiation": {
+    "overlay_number": "40%",
+    "overlay_subtitle": "never negotiate their salary",
+    "hook_statement": "Fewer than 40% of workers negotiated their last job offer, and those who didn't lost an average of $5,000 a year.",
+    "source": "Glassdoor Employment Confidence Survey 2023",
+    "source_short": "Glassdoor 2023"
+  },
+  "index funds explained": {
+    "overlay_number": "92%",
+    "overlay_subtitle": "of active funds lose to the index",
+    "hook_statement": "92% of actively managed funds underperformed their benchmark index over 15 years.",
+    "source": "S&P SPIVA U.S. Scorecard 2024",
+    "source_short": "SPIVA 2024"
+  },
+  "budget 50/30/20 rule": {
+    "overlay_number": "60%",
+    "overlay_subtitle": "live paycheck to paycheck",
+    "hook_statement": "60% of Americans are living paycheck to paycheck, and most don't have a working budget.",
+    "source": "LendingClub Reality Check Paycheck-to-Paycheck Report 2024",
+    "source_short": "LendingClub 2024"
+  },
+  "high yield savings account": {
+    "overlay_number": "0.46%",
+    "overlay_subtitle": "avg bank savings rate right now",
+    "hook_statement": "The average bank savings account pays just 0.46% — while high-yield accounts pay over 5%.",
+    "source": "FDIC National Rates and Rate Caps 2024",
+    "source_short": "FDIC 2024"
+  },
+  "tax brackets explained": {
+    "overlay_number": "0%",
+    "overlay_subtitle": "extra tax on your whole income",
+    "hook_statement": "Getting a raise never lowers your take-home pay — a higher bracket taxes only the dollars above the threshold.",
+    "source": "IRS Publication 17 — Your Federal Income Tax",
+    "source_short": "IRS Pub 17"
+  },
+  "student loan payoff strategy": {
+    "overlay_number": "$1.77T",
+    "overlay_subtitle": "in US student loan debt",
+    "hook_statement": "$1.77 trillion in student loan debt is outstanding in the US, and most borrowers are using the slowest payoff order.",
+    "source": "Federal Reserve Consumer Credit G.19 Release Q3 2024",
+    "source_short": "Federal Reserve Q3 2024"
+  },
+  "investing in your 20s vs 30s": {
+    "overlay_number": "4x",
+    "overlay_subtitle": "more to save starting at 35",
+    "hook_statement": "Starting to invest at 35 instead of 25 forces you to save roughly 4 times as much each month to hit the same retirement target.",
+    "source": "SEC Office of Investor Education — Compound Growth",
+    "source_short": "SEC Investor Ed"
+  },
+  "car loan trap": {
+    "overlay_number": "$726",
+    "overlay_subtitle": "avg monthly car payment in 2024",
+    "hook_statement": "The average new car payment hit $726 a month in 2024 — and that's quietly killing millions of wealth-building plans.",
+    "source": "Experian State of the Automotive Finance Market Q3 2024",
+    "source_short": "Experian Q3 2024"
+  },
+  "net worth calculation": {
+    "overlay_number": "$39k",
+    "overlay_subtitle": "median net worth under 35",
+    "hook_statement": "The median net worth for Americans under 35 is just $39,000 — and most don't even know their number.",
+    "source": "Federal Reserve Survey of Consumer Finances 2022",
+    "source_short": "Federal Reserve SCF 2022"
+  },
+  "expense ratio drag": {
+    "overlay_number": "$100k",
+    "overlay_subtitle": "lost to a 1% fund fee over 30 yrs",
+    "hook_statement": "A 1% annual fee on a $100,000 portfolio quietly costs you over $100,000 in lost growth over 30 years.",
+    "source": "SEC Office of Investor Education — Mutual Fund Fees",
+    "source_short": "SEC Fund Fee Math"
+  },
+  "dollar cost averaging": {
+    "overlay_number": "4.7%",
+    "overlay_subtitle": "how much avg investors underperform",
+    "hook_statement": "The average investor underperforms the market by 4.7% per year — mostly from trying to time it.",
+    "source": "DALBAR Quantitative Analysis of Investor Behavior 2023",
+    "source_short": "DALBAR QAIB 2023"
+  },
+  "S&P 500 vs total market": {
+    "overlay_number": "3,500+",
+    "overlay_subtitle": "extra stocks in total market",
+    "hook_statement": "A total market fund holds over 3,500 more stocks than the S&P 500, adding small- and mid-cap growth quietly.",
+    "source": "Vanguard Total Stock Market Index Fund Prospectus 2024",
+    "source_short": "Vanguard VTI 2024"
+  },
+  "HSA triple tax advantage": {
+    "overlay_number": "9%",
+    "overlay_subtitle": "of HSA holders invest the balance",
+    "hook_statement": "Only 9% of HSA account holders invest their balance — the other 91% are missing the triple tax advantage.",
+    "source": "Employee Benefit Research Institute HSA Database 2023",
+    "source_short": "EBRI HSA 2023"
+  },
+  "backdoor Roth IRA": {
+    "overlay_number": "$161k",
+    "overlay_subtitle": "Roth IRA income cutoff in 2024",
+    "hook_statement": "$161,000 is the income limit where Roth IRA contributions phase out in 2024 — but there's a legal workaround.",
+    "source": "IRS Notice 2023-75 — Retirement Plan Limits 2024",
+    "source_short": "IRS 2024 Limits"
+  },
+  "529 plan basics": {
+    "overlay_number": "57%",
+    "overlay_subtitle": "of parents haven't saved for college",
+    "hook_statement": "57% of parents have not started saving for their child's college education.",
+    "source": "Sallie Mae How America Pays for College 2023",
+    "source_short": "Sallie Mae 2023"
+  },
+  "401k vesting schedule": {
+    "overlay_number": "33%",
+    "overlay_subtitle": "leave before their vesting cliff",
+    "hook_statement": "33% of workers leave their job before hitting the vesting cliff, forfeiting thousands in employer match they already earned.",
+    "source": "Bureau of Labor Statistics National Compensation Survey 2022",
+    "source_short": "BLS NCS 2022"
+  },
+  "ESPP discount math": {
+    "overlay_number": "15%",
+    "overlay_subtitle": "guaranteed stock discount most ignore",
+    "hook_statement": "Most ESPPs offer a 15% guaranteed discount on company stock — and the majority of eligible employees skip it.",
+    "source": "National Association of Stock Plan Professionals NASPP Survey 2023",
+    "source_short": "NASPP 2023"
+  },
+  "job hopping salary growth": {
+    "overlay_number": "9.4%",
+    "overlay_subtitle": "more pay for job switchers",
+    "hook_statement": "Job switchers earn 9.4% more on average than workers who stay — and the gap compounds every year.",
+    "source": "ADP Research Institute Workforce Vitality Report 2023",
+    "source_short": "ADP Research 2023"
+  },
+  "raise vs bonus tax impact": {
+    "overlay_number": "22%",
+    "overlay_subtitle": "flat federal withholding on bonuses",
+    "hook_statement": "Your bonus is withheld at a flat 22% federal rate — which is why it feels smaller than your regular paycheck.",
+    "source": "IRS Publication 15 — Employer's Tax Guide 2024",
+    "source_short": "IRS Pub 15 2024"
+  },
+  "W-4 withholding reset": {
+    "overlay_number": "$3,011",
+    "overlay_subtitle": "avg tax refund — a free IRS loan",
+    "hook_statement": "The average tax refund in 2024 was $3,011 — money you loaned the IRS interest-free all year.",
+    "source": "IRS Filing Season Statistics 2024",
+    "source_short": "IRS Filing Stats 2024"
+  },
+  "capital gains tax basics": {
+    "overlay_number": "0%",
+    "overlay_subtitle": "capital gains rate under $47k income",
+    "hook_statement": "If your taxable income is under $47,025, your long-term capital gains tax rate is 0% in 2024.",
+    "source": "IRS Revenue Procedure 2023-34 — 2024 Tax Brackets",
+    "source_short": "IRS Rev Proc 2023-34"
+  },
+  "RMD rules explained": {
+    "overlay_number": "25%",
+    "overlay_subtitle": "penalty for missing one withdrawal",
+    "hook_statement": "Missing a required minimum distribution triggers a 25% excise tax on the amount you failed to withdraw.",
+    "source": "IRS Publication 590-B — SECURE 2.0 Act 2023",
+    "source_short": "IRS Pub 590-B"
+  },
+  "credit utilization rule": {
+    "overlay_number": "30%",
+    "overlay_subtitle": "utilization ceiling for a strong score",
+    "hook_statement": "Keeping your credit utilization below 30% is one of the fastest ways to raise your score without paying anything extra.",
+    "source": "FICO Score Factors — myFICO.com",
+    "source_short": "FICO Score Model"
+  },
+  "balance transfer card math": {
+    "overlay_number": "22.8%",
+    "overlay_subtitle": "avg credit card APR in 2024",
+    "hook_statement": "The average credit card APR hit 22.8% in 2024 — and a 0% balance transfer can legally reset that clock.",
+    "source": "Federal Reserve Consumer Credit G.19 Release 2024",
+    "source_short": "Federal Reserve 2024"
+  },
+  "APR vs APY": {
+    "overlay_number": "0.5%",
+    "overlay_subtitle": "hidden gap between APR and APY",
+    "hook_statement": "APR and APY can differ by over 0.5% — and lenders use whichever number looks better to them.",
+    "source": "Consumer Financial Protection Bureau — Understanding APR and APY",
+    "source_short": "CFPB APR/APY Guide"
+  },
+  "sinking funds method": {
+    "overlay_number": "$1,300",
+    "overlay_subtitle": "avg holiday debt per American",
+    "hook_statement": "Americans take on an average of $1,300 in debt each holiday season — a problem sinking funds prevent entirely.",
+    "source": "LendingClub Holiday Spending Report 2023",
+    "source_short": "LendingClub 2023"
+  },
+  "zero based budgeting": {
+    "overlay_number": "32%",
+    "overlay_subtitle": "of Americans keep a monthly budget",
+    "hook_statement": "Only 32% of Americans maintain a monthly household budget, yet budgeters build wealth faster.",
+    "source": "Gallup Economy and Personal Finance Survey 2023",
+    "source_short": "Gallup 2023"
+  },
+  "pay yourself first": {
+    "overlay_number": "3.6%",
+    "overlay_subtitle": "avg US personal savings rate",
+    "hook_statement": "Americans save only 3.6% of disposable income on average — far below the 15% financial planners recommend.",
+    "source": "Bureau of Economic Analysis Personal Income and Outlays 2024",
+    "source_short": "BEA 2024"
+  },
+  "biweekly payment strategy": {
+    "overlay_number": "6 yrs",
+    "overlay_subtitle": "shaved off a 30-yr mortgage",
+    "hook_statement": "Switching to biweekly mortgage payments can shorten a 30-year loan by up to 6 years without refinancing.",
+    "source": "Consumer Financial Protection Bureau — Mortgage Payment Strategies",
+    "source_short": "CFPB Mortgage Guide"
+  },
+  "rent vs buy break-even": {
+    "overlay_number": "4 yrs",
+    "overlay_subtitle": "typical break-even to beat renting",
+    "hook_statement": "In most US cities, buying a home breaks even versus renting in about 4 years — but that window is shifting.",
+    "source": "Zillow Research — Rent vs Buy Report 2024",
+    "source_short": "Zillow 2024"
+  },
+  "insurance deductible strategy": {
+    "overlay_number": "62%",
+    "overlay_subtitle": "of bankruptcies tied to medical costs",
+    "hook_statement": "62% of US personal bankruptcies are linked to medical costs — and the right deductible strategy reduces that risk.",
+    "source": "American Journal of Public Health — Medical Bankruptcy Study",
+    "source_short": "AJPH Medical Bankruptcy"
+  },
+  "financial independence number": {
+    "overlay_number": "25x",
+    "overlay_subtitle": "your annual spending = FI target",
+    "hook_statement": "Multiply your annual spending by 25 — that's your financial independence number, backed by 30 years of research.",
+    "source": "Trinity Study — Sustainable Withdrawal Rates 1998, updated 2011",
+    "source_short": "Trinity Study"
+  },
+  "cash flow review habit": {
+    "overlay_number": "$219",
+    "overlay_subtitle": "wasted monthly on forgotten subscriptions",
+    "hook_statement": "The average American wastes $219 a month on subscriptions they forgot they signed up for.",
+    "source": "C+R Research Consumer Subscription Report 2022",
+    "source_short": "C+R Research 2022"
+  },
+  "401k loan risks": {
+    "overlay_number": "13%",
+    "overlay_subtitle": "of 401k holders have an active loan",
+    "hook_statement": "13% of 401k participants currently have an outstanding loan against their retirement savings — at a hidden cost most don't see.",
+    "source": "Vanguard How America Saves 2023",
+    "source_short": "Vanguard HAOW 2023"
+  }
+}

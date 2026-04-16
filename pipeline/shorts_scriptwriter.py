@@ -117,6 +117,34 @@ FINANCE_TOPICS = [
 _CLIENT = None
 _CLIENT_API_KEY = None
 
+HOOK_STATS_FILE = Path("data/hook_stats.json")
+_HOOK_STATS_CACHE: dict | None = None
+
+
+def _load_stat_bank() -> dict:
+    global _HOOK_STATS_CACHE
+    if _HOOK_STATS_CACHE is not None:
+        return _HOOK_STATS_CACHE
+    if not HOOK_STATS_FILE.exists():
+        logger.warning("hook_stats.json not found — hook stats will be LLM-generated (unverified)")
+        _HOOK_STATS_CACHE = {}
+        return _HOOK_STATS_CACHE
+    try:
+        with HOOK_STATS_FILE.open() as f:
+            raw = json.load(f)
+        # Strip the _comment key — it's documentation only
+        _HOOK_STATS_CACHE = {k: v for k, v in raw.items() if not k.startswith("_")}
+    except Exception as exc:
+        logger.error("Failed to load hook_stats.json: %s — falling back to LLM stat", exc)
+        _HOOK_STATS_CACHE = {}
+    return _HOOK_STATS_CACHE
+
+
+def _lookup_stat(topic_name: str) -> dict | None:
+    """Return the verified stat entry for this topic, or None if not in bank."""
+    bank = _load_stat_bank()
+    return bank.get(topic_name.strip())
+
 
 def _load_last_shorts() -> list[dict]:
     if not LAST_SHORTS_FILE.exists():
@@ -670,9 +698,49 @@ def _retime_overlays_for_script_edit(data: dict, old_script: str, new_script: st
     data["overlays"] = retimed
 
 
+def _apply_stat_bank(data: dict, topic: dict) -> dict:
+    """
+    Override hook_number overlay and stat_citations with verified bank values.
+    Called after normalization so LLM output can never replace a verified stat.
+    No-op when the topic has no bank entry.
+    """
+    stat_entry = _lookup_stat(topic.get("topic", ""))
+    if not stat_entry:
+        return data
+
+    # Force hook_number overlay to use verified number + short claim subtitle
+    overlays = data.get("overlays", [])
+    hook_set = False
+    for ov in overlays:
+        if ov.get("type") == "hook_number" and ov.get("start_word", 999) <= 2:
+            ov["text"] = stat_entry["overlay_number"]
+            ov["subtitle"] = stat_entry["overlay_subtitle"]
+            hook_set = True
+            break
+    if not hook_set:
+        # Fallback: prepend a hook overlay if normalization dropped it
+        overlays.insert(0, {
+            "type": "hook_number",
+            "text": stat_entry["overlay_number"],
+            "subtitle": stat_entry["overlay_subtitle"],
+            "start_word": 0,
+            "duration_s": 4.0,
+        })
+    data["overlays"] = overlays
+
+    # Force stat_citations to the verified source — overrides anything LLM wrote
+    data["stat_citations"] = [stat_entry["source_short"]]
+    logger.info(
+        "Stat bank applied for '%s': overlay=%s | source=%s",
+        topic.get("topic"), stat_entry["overlay_number"], stat_entry["source_short"],
+    )
+    return data
+
+
 def _finalize_short_payload(data: dict, topic: dict) -> dict:
     """Normalize and stamp common metadata for a successful short payload."""
     data = _normalize_short_data(data, topic)
+    data = _apply_stat_bank(data, topic)
     data["topic"] = topic["topic"]
     data["pillar"] = topic["pillar"]
 
@@ -876,15 +944,17 @@ def _ensure_overlay_density(overlays: list[dict], script: str, topic: dict) -> l
 
     # Ensure hook overlay at time zero.
     if not any(o["type"] == "hook_number" and o["start_word"] == 0 for o in normalized):
-        normalized.insert(
-            0,
-            {
-                "type": "hook_number",
-                "text": _extract_first_number(script),
-                "start_word": 0,
-                "duration_s": 4.0,
-            },
-        )
+        stat_entry = _lookup_stat(topic.get("topic", ""))
+        hook_text = stat_entry["overlay_number"] if stat_entry else _extract_first_number(script)
+        hook_overlay: dict = {
+            "type": "hook_number",
+            "text": hook_text,
+            "start_word": 0,
+            "duration_s": 4.0,
+        }
+        if stat_entry:
+            hook_overlay["subtitle"] = stat_entry["overlay_subtitle"]
+        normalized.insert(0, hook_overlay)
 
     # Ensure CTA overlay near the end — use pillar-specific copy.
     cta_start = max(words - int(3.0 * WPS), 0)
@@ -1034,11 +1104,29 @@ def _build_prompt(topic: dict, feedback: str = "", retention_feedback: dict | No
         if feedback else ""
     )
     retention_block = _retention_prompt_block(retention_feedback)
+
+    stat_entry = _lookup_stat(topic.get("topic", ""))
+    if stat_entry:
+        stat_block = (
+            f"\nVERIFIED HOOK STAT (use exactly as written — do NOT invent a different number):\n"
+            f"  Opening sentence: \"{stat_entry['hook_statement']}\"\n"
+            f"  Source: {stat_entry['source']}\n"
+            f"  RULE: The script MUST open with the sentence above, verbatim. "
+            f"Do not replace the number, do not round it, do not paraphrase it.\n"
+        )
+    else:
+        stat_block = (
+            "\nWARNING: No verified stat found for this topic. "
+            "You MUST include a real, specific statistic with a named source in stat_citations. "
+            "Do not use a vague percentage without a citation.\n"
+        )
+
     return f"""You are writing a YouTube Shorts script for a personal finance channel called ClearWealth.
 {feedback_block}
 TOPIC: {topic["topic"]}
 ANGLE: {topic["angle"]}
 PILLAR: {topic["pillar"]}
+{stat_block}
 {retention_block}
 
 FORMAT RULES:
