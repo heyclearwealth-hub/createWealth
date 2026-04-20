@@ -98,15 +98,6 @@ except Exception:
     }
     _DEFAULT_GRADIENT = _PILLAR_GRADIENTS["investing"]
 
-# Keep BACKGROUNDS for any legacy references (mapped from the shared dict).
-BACKGROUNDS = [
-    [_PILLAR_GRADIENTS["investing"][0],     _PILLAR_GRADIENTS["investing"][1]],
-    [_PILLAR_GRADIENTS["career_income"][0], _PILLAR_GRADIENTS["career_income"][1]],
-    [_PILLAR_GRADIENTS["debt"][0],          _PILLAR_GRADIENTS["debt"][1]],
-    [_PILLAR_GRADIENTS["tax"][0],           _PILLAR_GRADIENTS["tax"][1]],
-    [_PILLAR_GRADIENTS["budgeting"][0],     _PILLAR_GRADIENTS["budgeting"][1]],
-]
-
 
 # ---------------------------------------------------------------------------
 # Font helpers
@@ -536,14 +527,6 @@ def _fetch_pexels_clips(
     return clips
 
 
-def _fetch_pexels_clip(pillar: str, work_dir: Path) -> Path | None:
-    """
-    Backward-compatible single-clip helper.
-    """
-    clips = _fetch_pexels_clips(pillar, work_dir, target_count=1)
-    return clips[0] if clips else None
-
-
 def _prepare_bg_video(raw_clip: Path, work_dir: Path, duration: float, tag: str = "0") -> Path:
     """
     Crop to 9:16, darken, loop/trim to `duration`. Returns processed video path.
@@ -573,54 +556,6 @@ def _prepare_bg_video(raw_clip: Path, work_dir: Path, duration: float, tag: str 
     return out
 
 
-def _extract_bg_frames(
-    video_path: Path,
-    work_dir: Path,
-    fps: float = BG_FRAME_FPS,
-    tag: str = "0",
-) -> list[tuple[float, Path]]:
-    """
-    Extract frames at `fps` from video. Returns list of (timestamp, frame_path) sorted by time.
-    At 6fps a 40s video yields ~240 frames — noticeably smoother background motion.
-    """
-    frame_dir = work_dir / f"bg_frames_{tag}"
-    if frame_dir.exists():
-        shutil.rmtree(frame_dir, ignore_errors=True)
-    frame_dir.mkdir(exist_ok=True)
-    cmd = [
-        _bin("ffmpeg"), "-y",
-        "-i", str(video_path),
-        "-vf", f"fps={fps}",
-        str(frame_dir / "frame_%04d.png"),
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-    if result.returncode != 0:
-        raise RuntimeError(f"bg frame extraction failed:\n{result.stderr[-300:]}")
-
-    frames: list[tuple[float, Path]] = []
-    for p in sorted(frame_dir.glob("frame_*.png")):
-        idx = int(p.stem.split("_")[1]) - 1   # 0-based
-        t = idx / fps
-        frames.append((t, p))
-    return frames
-
-
-def _closest_bg_frame(frames: list[tuple[float, Path]], t: float) -> Path:
-    """Return the path of the frame whose timestamp is closest to t."""
-    return min(frames, key=lambda x: abs(x[0] - t))[1]
-
-
-def _sample_bg_frame(frames: list[tuple[float, Path]], t: float) -> Path:
-    """
-    Sample a frame by looping local clip time instead of drifting to last frame.
-    """
-    if not frames:
-        raise ValueError("No background frames available")
-    max_t = frames[-1][0] if frames[-1][0] > 0 else 0.01
-    local_t = t % max_t
-    return _closest_bg_frame(frames, local_t)
-
-
 def _build_bg_montage_plan(duration_s: float, source_count: int, seed_hint: str = "") -> list[tuple[float, float, int]]:
     """
     Build pacing plan: frequent cuts (1.5s–3.0s), never longer than 4s.
@@ -647,19 +582,6 @@ def _build_bg_montage_plan(duration_s: float, source_count: int, seed_hint: str 
         if len(recent) > avoid_n:
             recent.pop(0)
     return plan
-
-
-def _bg_source_for_time(plan: list[tuple[float, float, int]], t: float) -> tuple[int, float]:
-    """
-    Return (source_idx, segment_start_time) for time t from montage plan.
-    """
-    if not plan:
-        return 0, 0.0
-    for start, end, idx in plan:
-        if start <= t < end:
-            return idx, start
-    start, _end, idx = plan[-1]
-    return idx, start
 
 
 def _build_gradient_bg_video(bg_img, vo_duration: float, work_dir: Path) -> Path:
@@ -780,43 +702,6 @@ def _build_montage_bg_video(
         raise RuntimeError(f"Montage concat failed: {result_cat.stderr[-300:]}")
     logger.info("Montage bg video: %s (%d shots)", bg_video.name, len(seg_paths))
     return bg_video
-
-
-def _build_background_frame(
-    t_mid: float,
-    gradient_img,           # RGBA PIL Image
-    bg_frames: list | None, # list[list[(t, Path)]] or None
-    montage_plan: list[tuple[float, float, int]] | None = None,
-    gradient_blend: float = 0.40,
-) -> "PIL.Image.Image":
-    """
-    Composite background for a segment centred at t_mid.
-    - With bg_frames: blend darkened video frame with gradient (keeps brand colours).
-    - Without bg_frames: use gradient only.
-    """
-    from PIL import Image
-
-    if bg_frames:
-        source_idx, seg_start = _bg_source_for_time(montage_plan or [], t_mid)
-        chosen_source = bg_frames[min(max(source_idx, 0), len(bg_frames) - 1)]
-        frame_path = _sample_bg_frame(chosen_source, t_mid - seg_start)
-        video_frame = Image.open(frame_path).convert("RGB").resize((SHORT_W, SHORT_H))
-        # Blend: (1-alpha)*video + alpha*gradient  →  subtle brand colour tint over footage
-        blended = Image.blend(video_frame, gradient_img.convert("RGB"), alpha=gradient_blend)
-        return blended.convert("RGBA")
-    else:
-        # Fallback motion so visuals never feel static when stock clips are unavailable.
-        base = gradient_img.convert("RGB")
-        zoom = 1.04 + (0.015 * math.sin(t_mid * 0.55))
-        scaled_w = int(SHORT_W * zoom)
-        scaled_h = int(SHORT_H * zoom)
-        resized = base.resize((scaled_w, scaled_h), Image.Resampling.BICUBIC)
-        offset_x = int((scaled_w - SHORT_W) / 2 + math.sin(t_mid * 0.31) * 14)
-        offset_y = int((scaled_h - SHORT_H) / 2 + math.cos(t_mid * 0.27) * 22)
-        left = max(0, min(offset_x, scaled_w - SHORT_W))
-        top = max(0, min(offset_y, scaled_h - SHORT_H))
-        moving = resized.crop((left, top, left + SHORT_W, top + SHORT_H))
-        return moving.convert("RGBA")
 
 
 # ---------------------------------------------------------------------------

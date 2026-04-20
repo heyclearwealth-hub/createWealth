@@ -29,7 +29,7 @@ MODEL = os.environ.get("ANTHROPIC_MODEL", DEFAULT_MODEL)
 LAST_SHORTS_FILE = Path("data/last_shorts.json")
 MAX_SHORTS_MEMORY = 120
 WPS = 2.5  # words per second at voiceover pace
-MIN_WORDS = 110
+MIN_WORDS = 115
 MAX_WORDS = 125
 MIN_OVERLAYS = 6
 MAX_OVERLAYS = 10
@@ -1178,7 +1178,7 @@ OVERLAY RULES:
 - start_word: 0-indexed position of spoken word in voiceover (count only real words — do NOT count [PAUSE] markers)
 - duration_s: how long it stays on screen
 - types: "hook_number" (big stat, 4s), "label" (short phrase, 2.5s), "comparison" (before/after side by side, 4s), "cta" (final call to action, 5s)
-- Plan 6–10 overlays total.
+- Plan {MIN_OVERLAYS}–{MAX_OVERLAYS} overlays total.
 - Label overlays must be concise: 2–5 words, no ellipses.
 - Every key number must have an overlay.
 - There must be no dead visual gap longer than 2.5s.
