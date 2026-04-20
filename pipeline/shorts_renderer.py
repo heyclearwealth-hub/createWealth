@@ -287,7 +287,7 @@ def _make_spoken_caption_image(
     words: list[str],
     word_timestamps: list[float] | None,
     t_mid: float,
-    y_ratio: float = 0.76,
+    y_ratio: float = 0.62,
     w: int = SHORT_W,
     h: int = SHORT_H,
     sent_ends: "set[int] | None" = None,
@@ -765,7 +765,7 @@ def _make_overlay_image(overlay: dict, w: int = SHORT_W, h: int = SHORT_H, label
             logger.warning("Label text clipped during render: '%s' → '%s'", text, rendered_text)
         block_h = sum(_text_height(draw, ln, font) for ln in lines) + 8 * max(0, len(lines) - 1)
         pad = 18
-        y0 = label_y0 if label_y0 is not None else int(h * 0.68)
+        y0 = label_y0 if label_y0 is not None else int(h * 0.58)
         card_w = int(w * 0.82)
         x0 = (w - card_w) // 2
         draw.rounded_rectangle(
@@ -831,7 +831,7 @@ def _make_overlay_image(overlay: dict, w: int = SHORT_W, h: int = SHORT_H, label
         lines, font = _wrap_fit_lines(draw, text, max_width=int(w * 0.80), start_size=58, min_size=32, max_lines=2)
         block_h = sum(_text_height(draw, ln, font) for ln in lines) + 8 * max(0, len(lines) - 1)
         pad = 24
-        y0 = int(h * 0.80)
+        y0 = int(h * 0.72)
         card_w = int(w * 0.84)
         x0 = (w - card_w) // 2
         draw.rounded_rectangle(
@@ -1338,7 +1338,7 @@ def render(
 
         # Transparent frame: overlays only, no background (background comes from bg_video)
         frame = Image.new("RGBA", (SHORT_W, SHORT_H), (0, 0, 0, 0))
-        label_next_y = int(SHORT_H * 0.68)
+        label_next_y = int(SHORT_H * 0.58)
         for ov in active:
             if ov.get("type") == "label":
                 frame = Image.alpha_composite(frame, _make_overlay_image(ov, label_y0=label_next_y))
@@ -1356,7 +1356,7 @@ def render(
                 )
                 _set_caption_warned(True)
             # Keep captions clear of active label cards.
-            caption_y = 0.82 if has_active_label else 0.76
+            caption_y = 0.68 if has_active_label else 0.62
             caption_img = _make_spoken_caption_image(
                 spoken_words_list,
                 word_timestamps,
@@ -1393,7 +1393,7 @@ def render(
     if bgmusic_path.exists() and music_enabled:
         # voiceover=input 2, bgmusic=input 3
         audio_filter = (
-            "[2:a]highpass=f=85,lowpass=f=12000,"
+            "[2:a]highpass=f=100,lowpass=f=12000,"
             "acompressor=threshold=-17dB:ratio=2.2:attack=15:release=180,"
             "volume=1.05,asplit=2[voice_main][voice_sc];"
             "[3:a]volume=0.11[raw_music];"
@@ -1405,7 +1405,7 @@ def render(
     else:
         # voiceover=input 2
         audio_filter = (
-            "[2:a]highpass=f=85,lowpass=f=12000,"
+            "[2:a]highpass=f=100,lowpass=f=12000,"
             "acompressor=threshold=-17dB:ratio=2.2:attack=15:release=180:makeup=3,"
             f"loudnorm=I={TARGET_LOUDNESS}:TP={MIX_TRUE_PEAK_TARGET}:LRA=7[a]"
         )
