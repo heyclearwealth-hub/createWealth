@@ -65,6 +65,11 @@ def test_spoken_words_ignores_pause_markers():
     assert words == ["Save", "more", "money", "now"]
 
 
+def test_spoken_words_keeps_money_number_grouping():
+    words = sr._spoken_words("Could not cover a $1,000 emergency.")
+    assert "$1,000" in words
+
+
 def test_sentence_end_indices_pause_and_punctuation():
     # "Save more" ends sentence at word 1 (PAUSE), "now" ends at word 2 (period)
     script = "Save more. [PAUSE] Invest now."

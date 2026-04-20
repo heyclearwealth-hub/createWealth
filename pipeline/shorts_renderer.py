@@ -61,8 +61,8 @@ BG_BLUR = "1:1"
 HOOK_INTERRUPT_AT_S = 0.55
 HOOK_INTERRUPT_DURATION_S = 1.15
 HOOK_SCENE_DEADLINE_S = 1.0
-FREEZE_WARN_MIN_S = 2.0
-FREEZE_WARN_TOTAL_S = 8.0
+FREEZE_WARN_MIN_S = 0.75
+FREEZE_WARN_TOTAL_S = 3.5
 MIN_VIDEO_BITRATE = "6M"
 MAX_VIDEO_BITRATE = "8M"
 VIDEO_BUF_SIZE = "12M"
@@ -105,6 +105,7 @@ ADVICE_SIGNAL_RE = re.compile(
     re.IGNORECASE,
 )
 from pipeline.text_utils import fix_finance_acronyms as _fix_finance_acronyms
+WORD_TOKEN_RE = re.compile(r"\$?\d[\d,]*(?:\.\d+)?%?|[A-Za-z]+(?:[-'][A-Za-z]+)*")
 
 # Import pillar gradients from thumbnail_gen to keep a single source of truth.
 # New pillars added there will automatically apply here too.
@@ -262,7 +263,7 @@ def _draw_multiline_centered(
 def _spoken_words(script_text: str) -> list[str]:
     # Remove stage markers like [PAUSE] so caption indexing matches spoken audio.
     cleaned = re.sub(r"\[[^\]]+\]", " ", str(script_text or ""))
-    return re.findall(r"[A-Za-z0-9$%']+", cleaned)
+    return WORD_TOKEN_RE.findall(cleaned)
 
 
 def _sentence_end_indices(script_text: str) -> set[int]:
@@ -282,7 +283,7 @@ def _sentence_end_indices(script_text: str) -> set[int]:
         if token == "__BRK__":
             if word_idx > 0:
                 ends.add(word_idx - 1)
-        elif re.search(r"[A-Za-z0-9$%']+", token):
+        elif WORD_TOKEN_RE.search(token):
             word_idx += 1
     return ends
 
@@ -307,7 +308,7 @@ def _caption_slice(
 ) -> list[tuple[str, int]]:
     if not words or active_idx < 0:
         return []
-    start = max(0, active_idx - 2)
+    start = max(0, active_idx - 1)
     end = min(len(words), start + window)
     if end - start < min(4, len(words)):
         start = max(0, end - window)
@@ -600,9 +601,13 @@ def _prepare_bg_video(raw_clip: Path, work_dir: Path, duration: float, tag: str 
     We keep footage brighter than before to improve feed-stop visibility on mobile.
     """
     out = work_dir / f"bg_processed_{tag}.mp4"
+    overscan_w = int(SHORT_W * 1.08)
+    overscan_h = int(SHORT_H * 1.08)
     vf = (
-        f"scale={SHORT_W}:{SHORT_H}:force_original_aspect_ratio=increase,"
-        f"crop={SHORT_W}:{SHORT_H},"
+        f"scale={overscan_w}:{overscan_h}:force_original_aspect_ratio=increase,"
+        f"crop={SHORT_W}:{SHORT_H}:"
+        f"'(in_w-{SHORT_W})/2 + (in_w-{SHORT_W})*0.18*sin(t*0.41)':"
+        f"'(in_h-{SHORT_H})/2 + (in_h-{SHORT_H})*0.18*cos(t*0.33)',"
         f"eq=brightness={BG_BRIGHTNESS}:saturation={BG_SATURATION},"
         f"boxblur={BG_BLUR}"
     )
@@ -888,17 +893,30 @@ def _make_overlay_image(overlay: dict, w: int = SHORT_W, h: int = SHORT_H, label
     elif otype == "comparison":
         left = _clean_text(overlay.get("left", ""))
         right = _clean_text(overlay.get("right", ""))
-        draw.rectangle([(0, int(h * 0.35)), (w, int(h * 0.65))], fill=(0, 0, 0, 180))
-        draw.line([(w // 2, int(h * 0.37)), (w // 2, int(h * 0.63))], fill=(100, 100, 100, 200), width=3)
-        hfont = _get_font(44)
-        draw.text((int(w * 0.08), int(h * 0.37)), "BEFORE", font=hfont, fill=(255, 80, 80, 255))
-        draw.text((int(w * 0.58), int(h * 0.37)), "AFTER",  font=hfont, fill=(80, 220, 100, 255))
-        left_lines,  left_font  = _wrap_fit_lines(draw, left.replace("\n", " "),  int(w * 0.40), 52, 30, max_lines=3)
-        right_lines, right_font = _wrap_fit_lines(draw, right.replace("\n", " "), int(w * 0.40), 52, 30, max_lines=3)
+        card_w = int(w * 0.90)
+        card_h = int(h * 0.30)
+        x0 = (w - card_w) // 2
+        y0 = int(h * 0.34)
+        x1 = x0 + card_w
+        y1 = y0 + card_h
+        mid = x0 + card_w // 2
+
+        draw.rounded_rectangle([(x0, y0), (x1, y1)], radius=20, fill=(0, 0, 0, 205))
+        draw.line([(mid, y0 + 18), (mid, y1 - 18)], fill=(115, 115, 115, 205), width=3)
+        draw.line([(x0 + 18, y0 + int(card_h * 0.30)), (x1 - 18, y0 + int(card_h * 0.30))], fill=(115, 115, 115, 180), width=2)
+
+        hfont = _get_font(42)
+        draw.text((x0 + int(card_w * 0.12), y0 + 20), "BEFORE", font=hfont, fill=(255, 92, 92, 255))
+        draw.text((x0 + int(card_w * 0.62), y0 + 20), "AFTER", font=hfont, fill=(96, 230, 130, 255))
+
+        body_y = y0 + int(card_h * 0.34)
+        left_lines, left_font = _wrap_fit_lines(draw, left.replace("\n", " "), int(card_w * 0.40), 46, 28, max_lines=3)
+        right_lines, right_font = _wrap_fit_lines(draw, right.replace("\n", " "), int(card_w * 0.40), 46, 28, max_lines=3)
+
         for i, line in enumerate(left_lines[:3]):
-            draw.text((int(w * 0.06), int(h * (0.44 + i * 0.07))), line, font=left_font,  fill=(255, 255, 255, 255))
+            draw.text((x0 + int(card_w * 0.06), body_y + i * 58), line, font=left_font, fill=(245, 245, 245, 255))
         for i, line in enumerate(right_lines[:3]):
-            draw.text((int(w * 0.56), int(h * (0.44 + i * 0.07))), line, font=right_font, fill=(255, 255, 255, 255))
+            draw.text((x0 + int(card_w * 0.56), body_y + i * 58), line, font=right_font, fill=(245, 245, 245, 255))
 
     elif otype == "cta":
         text = _clean_text(overlay.get("text", "Follow for more"))

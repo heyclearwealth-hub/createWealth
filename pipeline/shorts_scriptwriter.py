@@ -32,7 +32,7 @@ WPS = 2.5  # words per second at voiceover pace
 MIN_WORDS = 95
 MAX_WORDS = 103
 MIN_OVERLAYS = 6
-MAX_OVERLAYS = 10
+MAX_OVERLAYS = 12
 MAX_TEXT_CHARS = 34
 MIN_TITLE_OPTIONS = 5
 MAX_TITLE_OPTIONS = 10
@@ -62,18 +62,19 @@ OVERLAY_TYPES = {"hook_number", "label", "comparison", "cta"}
 
 # Pillar-specific CTA copy — specific CTAs convert better than generic "money tips"
 PILLAR_CTA_TEXT = {
-    "investing": "Follow for investing wins",
-    "budgeting": "Follow for money-saving tips",
-    "debt": "Follow for debt freedom steps",
-    "tax": "Follow for tax hacks",
-    "career_income": "Follow for income growth tips",
+    "investing": "Save this and follow for investing playbooks",
+    "budgeting": "Save this and follow for money-saving systems",
+    "debt": "Save this and follow for debt payoff steps",
+    "tax": "Save this and follow for tax setup tactics",
+    "career_income": "Save this and follow for income growth moves",
 }
 DEFAULT_DURATIONS = {
     "hook_number": 4.0,
     "label": 2.2,
-    "comparison": 4.0,
-    "cta": 4.5,
+    "comparison": 2.8,
+    "cta": 3.6,
 }
+MIN_COMPARISON_TABLES = 2
 
 FINANCE_TOPICS = [
     {"topic": "compound interest", "pillar": "investing", "angle": "small monthly amount becomes huge over time"},
@@ -119,6 +120,7 @@ _CLIENT_API_KEY = None
 HOOK_STATS_FILE = Path("data/hook_stats.json")
 _HOOK_STATS_CACHE: dict | None = None
 from pipeline.text_utils import ACRONYM_PATTERNS as _ACRONYM_PATTERNS
+WORD_TOKEN_RE = re.compile(r"\$?\d[\d,]*(?:\.\d+)?%?|[A-Za-z]+(?:[-'][A-Za-z]+)*")
 
 
 def _load_stat_bank() -> dict:
@@ -314,12 +316,16 @@ def _clean_script_text(script: str) -> str:
     return _BRACKET_RE.sub(" ", script or "").strip()
 
 
+def _spoken_tokens(script: str) -> list[str]:
+    return WORD_TOKEN_RE.findall(_clean_script_text(script))
+
+
 def _word_count(script: str) -> int:
-    return len(re.findall(r"[A-Za-z0-9$%']+", _clean_script_text(script)))
+    return len(_spoken_tokens(script))
 
 
 def _first_token(script: str) -> str:
-    words = _clean_script_text(script).split()
+    words = _spoken_tokens(script)
     return words[0] if words else ""
 
 
@@ -340,17 +346,192 @@ def _normalize_text(value: str, fallback: str) -> str:
     return text
 
 
+def _polish_voiceover_script(script: str) -> str:
+    """
+    Lightweight cleanup to avoid awkward caption fragments from LLM drift.
+    """
+    text = " ".join(str(script or "").split()).strip()
+    if not text:
+        return text
+    text = text.replace("’", "'")
+    for pattern, replacement in _ACRONYM_PATTERNS:
+        text = pattern.sub(replacement, text)
+    text = re.sub(r"\s+([,.!?])", r"\1", text)
+    text = re.sub(r"\s*\[PAUSE\]\s*", " [PAUSE] ", text)
+    # Remove occasional filler lead-ins that create broken caption starts.
+    text = re.sub(
+        r"(^|[.!?]\s|\[PAUSE\]\s)(?:Know|Math|Now)\s+(?=(?:Here's|If|You|We|This|That)\b)",
+        r"\1",
+        text,
+        flags=re.IGNORECASE,
+    )
+    # Normalize common money number spacing artifacts.
+    text = re.sub(r"\$([0-9]{1,3})\s+([0-9]{3})(?!\d)", r"$\1,\2", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _extract_numeric_claims(script: str) -> list[str]:
+    claims = re.findall(r"\$?\d[\d,]*(?:\.\d+)?%?", _clean_script_text(script))
+    out: list[str] = []
+    for claim in claims:
+        c = claim.strip()
+        if c and c not in out:
+            out.append(c)
+    return out
+
+
+def _window_occupied(overlays: list[dict], start_word: int, duration_s: float) -> bool:
+    start = int(start_word)
+    end = start + int(max(1.0, duration_s) * WPS)
+    for ov in overlays:
+        try:
+            ov_start = int(ov.get("start_word", 0))
+            ov_end = ov_start + int(float(ov.get("duration_s", 2.0)) * WPS)
+        except (TypeError, ValueError):
+            continue
+        if ov_start < end and start < ov_end:
+            return True
+    return False
+
+
+def _find_next_free_start(
+    overlays: list[dict], candidate: int, duration_s: float, max_words: int, step: int = 2
+) -> int | None:
+    pos = max(0, int(candidate))
+    while pos < max_words - 1:
+        if not _window_occupied(overlays, pos, duration_s):
+            return pos
+        pos += max(1, step)
+    return None
+
+
+def _comparison_table_pairs(numbers: list[str]) -> list[tuple[str, str]]:
+    if len(numbers) >= 4:
+        return [
+            (f"Paying {numbers[0]} now", f"After fix: {numbers[1]}"),
+            (f"Yearly leak: {numbers[2]}", f"Keep yearly: {numbers[3]}"),
+        ]
+    if len(numbers) >= 2:
+        return [
+            (f"Paying {numbers[0]} now", f"After fix: {numbers[1]}"),
+            (f"Old path: {numbers[0]}", f"Better path: {numbers[1]}"),
+        ]
+    return [
+        ("Before: status quo", "After: one fix"),
+        ("Before: money leak", "After: money kept"),
+    ]
+
+
+def _apply_engagement_blueprint(overlays: list[dict], script: str, topic: dict) -> list[dict]:
+    """
+    Deterministic engagement structure so every short has:
+    - early interaction prompt
+    - multiple before/after table beats (comparison overlays)
+    - progress labels to maintain momentum
+    """
+    words = max(1, _word_count(script))
+    result = [dict(ov) for ov in overlays if isinstance(ov, dict)]
+    compact_script = words < 30
+
+    # 1) Early "pick one" interaction prompt
+    if (not compact_script) and not any(ov.get("type") == "label" and "?" in str(ov.get("text", "")) for ov in result):
+        prompt_pos = _find_next_free_start(result, int(words * 0.18), duration_s=1.8, max_words=words)
+        if prompt_pos is not None:
+            result.append(
+                {
+                    "type": "label",
+                    "text": "WHICH WOULD YOU PICK?",
+                    "start_word": prompt_pos,
+                    "duration_s": 1.8,
+                }
+            )
+
+    # 2) Multiple before/after table beats (comparison overlays)
+    existing_comparisons = [ov for ov in result if ov.get("type") == "comparison"]
+    needed = max(0, MIN_COMPARISON_TABLES - len(existing_comparisons))
+    if needed:
+        numbers = _extract_numeric_claims(script)
+        table_pairs = _comparison_table_pairs(numbers)
+        targets = [0.42, 0.62, 0.76] if compact_script else [0.36, 0.52, 0.68, 0.78]
+        comp_duration = 1.8 if compact_script else 2.2
+        for idx in range(needed):
+            left, right = table_pairs[idx % len(table_pairs)]
+            candidate = int(words * targets[min(idx, len(targets) - 1)])
+            start = _find_next_free_start(result, candidate, duration_s=comp_duration, max_words=words)
+            if start is None and idx + 1 < len(targets):
+                for alt_ratio in targets[idx + 1:]:
+                    start = _find_next_free_start(result, int(words * alt_ratio), duration_s=comp_duration, max_words=words)
+                    if start is not None:
+                        break
+            if start is None:
+                continue
+            result.append(
+                {
+                    "type": "comparison",
+                    "left": left,
+                    "right": right,
+                    "start_word": start,
+                    "duration_s": comp_duration,
+                }
+            )
+        # Hard fallback for very short scripts: force-fill remaining table beats.
+        current_comparisons = [ov for ov in result if ov.get("type") == "comparison"]
+        while len(current_comparisons) < MIN_COMPARISON_TABLES:
+            idx = len(current_comparisons)
+            left, right = table_pairs[idx % len(table_pairs)]
+            forced_start = max(1, min(words - 2, int(words * (0.55 + idx * 0.14))))
+            result.append(
+                {
+                    "type": "comparison",
+                    "left": left,
+                    "right": right,
+                    "start_word": forced_start,
+                    "duration_s": 1.4 if compact_script else comp_duration,
+                }
+            )
+            current_comparisons = [ov for ov in result if ov.get("type") == "comparison"]
+
+    # 3) Progress cadence labels
+    progress_labels = ["STEP 1/3", "STEP 2/3", "STEP 3/3"]
+    progress_targets = [0.30, 0.52, 0.74]
+    for text, ratio in zip(progress_labels, progress_targets):
+        if compact_script and text != "STEP 1/3":
+            continue
+        if any(ov.get("type") == "label" and str(ov.get("text", "")).upper() == text for ov in result):
+            continue
+        start = _find_next_free_start(result, int(words * ratio), duration_s=1.4, max_words=words)
+        if start is None:
+            continue
+        result.append(
+            {
+                "type": "label",
+                "text": text,
+                "start_word": start,
+                "duration_s": 1.4,
+            }
+        )
+
+    result.sort(key=lambda ov: int(ov.get("start_word", 0)))
+    return result
+
+
 def _normalize_label_text(value: str, fallback: str = "THIS IS KEY") -> str:
     """
     Labels should stay punchy (2-5 words) and never trail with ellipses.
     """
-    raw = " ".join(str(value or "").split()).strip().upper()
+    raw_value = " ".join(str(value or "").split()).strip()
+    had_question = "?" in raw_value
+    raw = raw_value.upper()
     words = re.findall(r"[A-Z0-9$%]+", raw)
     if not words:
         words = fallback.split()
     if len(words) < 2:
         words.append("NOW")
-    return " ".join(words[:5])
+    out = " ".join(words[:5])
+    if had_question and not out.endswith("?"):
+        out += "?"
+    return out
 
 
 def _default_stat_citations(topic: dict) -> list[str]:
@@ -505,7 +686,7 @@ def assess_hook_strength(script: str) -> tuple[bool, str]:
     1. First word (index 0-2) must contain a number — viewer must see the stat before 1.2s.
     2. First 16 words must include a pain term and a consequence term.
     """
-    tokens = re.findall(r"[A-Za-z0-9$%']+", _clean_script_text(script))
+    tokens = _spoken_tokens(script)
     hook_tokens = tokens[:16]
     hook_text = " ".join(hook_tokens).lower()
 
@@ -589,7 +770,7 @@ def _trim_script_to_max_words(script: str, max_words: int = MAX_WORDS) -> str:
     out_tokens: list[str] = []
     running_words = 0
     for tok in text.split():
-        token_words = len(re.findall(r"[A-Za-z0-9$%']+", tok))
+        token_words = len(WORD_TOKEN_RE.findall(tok))
         if running_words + token_words > max_words:
             break
         out_tokens.append(tok)
@@ -1022,9 +1203,9 @@ def _ensure_overlay_density(overlays: list[dict], script: str, topic: dict) -> l
 
     # Ensure CTA overlay near the end — use pillar-specific copy.
     cta_start = max(words - int(3.0 * WPS), 0)
+    pillar = str(topic.get("pillar", "")).lower()
+    cta_copy = PILLAR_CTA_TEXT.get(pillar, "Save this and follow for more money systems")
     if not any(o["type"] == "cta" for o in normalized):
-        pillar = str(topic.get("pillar", "")).lower()
-        cta_copy = PILLAR_CTA_TEXT.get(pillar, "Follow for more money tips")
         normalized.append(
             {
                 "type": "cta",
@@ -1033,6 +1214,11 @@ def _ensure_overlay_density(overlays: list[dict], script: str, topic: dict) -> l
                 "duration_s": 3.8,
             }
         )
+    else:
+        for ov in normalized:
+            if ov.get("type") == "cta":
+                ov["text"] = cta_copy
+                ov["start_word"] = max(int(ov.get("start_word", cta_start)), cta_start)
 
     filler_labels = [
         "REAL EXAMPLE",
@@ -1105,11 +1291,13 @@ def _ensure_overlay_density(overlays: list[dict], script: str, topic: dict) -> l
     clamped.sort(key=lambda o: o["start_word"])
 
     if len(clamped) > MAX_OVERLAYS:
-        # Keep hook, CTA, and the earliest useful overlays.
+        # Keep hook, CTA, and prioritize comparison-table beats before generic labels.
         hook = [o for o in clamped if o["type"] == "hook_number"][:1]
         cta = [o for o in clamped if o["type"] == "cta"][-1:]
-        middle = [o for o in clamped if o["type"] not in {"hook_number", "cta"}]
-        keep_middle = middle[: max(0, MAX_OVERLAYS - len(hook) - len(cta))]
+        comparisons = [o for o in clamped if o["type"] == "comparison"]
+        labels = [o for o in clamped if o["type"] == "label"]
+        preferred_middle = comparisons + labels
+        keep_middle = preferred_middle[: max(0, MAX_OVERLAYS - len(hook) - len(cta))]
         clamped = sorted(hook + keep_middle + cta, key=lambda o: o["start_word"])
 
     return clamped
@@ -1117,12 +1305,16 @@ def _ensure_overlay_density(overlays: list[dict], script: str, topic: dict) -> l
 
 def _normalize_short_data(data: dict, topic: dict) -> dict:
     """Return a new dict with overlays and title_options normalised. Does not mutate data."""
-    script = data.get("voiceover_script", "")
+    script = _polish_voiceover_script(data.get("voiceover_script", ""))
     ranked_titles, scored_titles = _normalize_title_options(data.get("title_options", []), topic, script)
     stat_citations = _normalize_stat_citations(data.get("stat_citations", []), topic)
+    overlays = _ensure_overlay_density(data.get("overlays", []), script, topic)
+    overlays = _apply_engagement_blueprint(overlays, script, topic)
+    overlays = _ensure_overlay_density(overlays, script, topic)
     return {
         **data,
-        "overlays": _ensure_overlay_density(data.get("overlays", []), script, topic),
+        "voiceover_script": script,
+        "overlays": overlays,
         "title_options": ranked_titles,
         "title_scores": scored_titles,
         "selected_title": ranked_titles[0] if ranked_titles else str(topic.get("topic", "")).strip(),
@@ -1210,10 +1402,11 @@ OVERLAY RULES:
 - on_screen text appears at specific word indexes in the voiceover
 - start_word: 0-indexed position of spoken word in voiceover (count only real words — do NOT count [PAUSE] markers)
 - duration_s: how long it stays on screen
-- types: "hook_number" (big stat, 4s), "label" (short phrase, 2.5s), "comparison" (before/after side by side, 4s), "cta" (final call to action, 5s)
+- types: "hook_number" (big stat, 4s), "label" (short phrase, 2.0s), "comparison" (before/after table beat, 2.5s), "cta" (final call to action, 3.5s)
 - Plan {MIN_OVERLAYS}–{MAX_OVERLAYS} overlays total.
 - Label overlays must be concise: 2–5 words, no ellipses.
 - Every key number must have an overlay.
+- Include at least 2 comparison overlays (before vs after) at different timestamps.
 - There must be no dead visual gap longer than 2.0s.
 
 Return ONLY this JSON, no explanation:
@@ -1261,7 +1454,8 @@ def generate(
 
     def _apply_script_update(data: dict, new_script: str) -> str:
         old_script = str(data.get("voiceover_script", "") or "")
-        fitted = _fit_script_word_budget(new_script, MIN_WORDS, MAX_WORDS)
+        polished = _polish_voiceover_script(new_script)
+        fitted = _fit_script_word_budget(polished, MIN_WORDS, MAX_WORDS)
         if fitted != old_script:
             _retime_overlays_for_script_edit(data, old_script, fitted)
         data["voiceover_script"] = fitted
@@ -1291,7 +1485,7 @@ def generate(
             logger.warning("Script missing (attempt %d), retrying", attempt + 1)
             continue
         data["voiceover_script"] = script
-        script = _apply_script_update(data, _enforce_loop_ending(script))
+        script = _apply_script_update(data, _polish_voiceover_script(_enforce_loop_ending(script)))
 
         valid, reason = _is_valid_short_shape(data, topic)
         if not valid:

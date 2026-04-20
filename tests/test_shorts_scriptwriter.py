@@ -110,3 +110,22 @@ def test_normalize_text_preserves_finance_acronym_casing():
 def test_word_budget_defaults_match_short_target_window():
     assert sw.MIN_WORDS >= 80
     assert sw.MAX_WORDS <= 110
+
+
+def test_polish_voiceover_script_removes_awkward_leadin_and_formats_number():
+    raw = "Know Here's the exact number. Could not cover a $1 000 emergency."
+    polished = sw._polish_voiceover_script(raw)
+    assert "Know Here's" not in polished
+    assert "$1,000" in polished
+
+
+def test_engagement_blueprint_injects_multiple_comparison_tables():
+    script = (
+        "56% of people miss this. [PAUSE] If you spend $500 now it can become $1,200 later. "
+        "Do one fix and keep $700."
+    )
+    overlays = [{"type": "hook_number", "text": "56%", "start_word": 0, "duration_s": 4.0}]
+    topic = {"pillar": "debt"}
+    patched = sw._apply_engagement_blueprint(overlays, script, topic)
+    comparisons = [ov for ov in patched if ov.get("type") == "comparison"]
+    assert len(comparisons) >= 2
