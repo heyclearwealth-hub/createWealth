@@ -184,6 +184,10 @@ def generate_with_timestamps(
             if not audio_b64:
                 raise RuntimeError("No audio_base64 in timestamps response")
             audio_bytes = base64.b64decode(audio_b64)
+            if not (audio_bytes[:3] == b"ID3" or audio_bytes[:2] == b"\xff\xfb"):
+                raise RuntimeError(
+                    f"Decoded audio missing valid MP3 header (got {audio_bytes[:4].hex()!r})"
+                )
             with output_path.open("wb") as f:
                 f.write(audio_bytes)
 

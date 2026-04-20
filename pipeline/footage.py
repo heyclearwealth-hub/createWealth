@@ -26,6 +26,8 @@ OUTPUT_DIR = Path("workspace/clips")
 TARGET_CLIP_COUNT = 10
 MIN_CLIP_DURATION_SEC = 5
 MIN_WIDTH = 1280
+MAX_CLIPS_PER_QUERY = 2
+MAX_CLIPS_PER_BUCKET = 4
 
 
 def _search_pexels(query: str, per_page: int = 20, page: int = 1) -> list[dict]:
@@ -206,6 +208,25 @@ def _job_queries(job_title: str) -> list[str]:
     return [f"{job_title} professional working office", f"young {job_title} smiling success"]
 
 
+def _query_bucket(query: str) -> str:
+    """
+    Coarse visual bucket used to prevent over-concentration on near-identical scenes.
+    """
+    tokens = re.findall(r"[a-z0-9]+", str(query or "").lower())
+    if not tokens:
+        return "misc"
+    stop_words = {
+        "person", "young", "professional", "working", "office", "money", "financial",
+        "closeup", "smiling", "laptop", "phone", "bank", "documents", "desk",
+        "couple", "family", "business", "man", "woman", "happy", "success",
+        "city", "excited", "confident", "modern", "hands", "people",
+    }
+    core = [tok for tok in tokens if tok not in stop_words][:2]
+    if not core:
+        core = tokens[:1]
+    return "_".join(core)
+
+
 def _clear_old_clips() -> None:
     """Remove previous run clip files so deterministic names never overwrite silently."""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -265,14 +286,21 @@ def download(topic: dict, target_count: int = TARGET_CLIP_COUNT, script_data: di
     queries = list(dict.fromkeys(queries))
     valid_clips: list[Path] = []
     seen_ids: set[int] = set()
+    query_hits: dict[str, int] = {}
+    bucket_hits: dict[str, int] = {}
     clip_attempt_idx = 0  # tracks download attempts independently of validated count
 
     for query in queries:
         if len(valid_clips) >= target_count:
             break
+        query_hits.setdefault(query, 0)
+        bucket = _query_bucket(query)
+        if bucket_hits.get(bucket, 0) >= MAX_CLIPS_PER_BUCKET:
+            logger.info("Skipping query '%s' (bucket '%s' already saturated)", query, bucket)
+            continue
 
         for page in range(1, 4):
-            if len(valid_clips) >= target_count:
+            if len(valid_clips) >= target_count or query_hits[query] >= MAX_CLIPS_PER_QUERY:
                 break
 
             logger.info("Searching Pexels: query='%s' page=%d", query, page)
@@ -284,6 +312,10 @@ def download(topic: dict, target_count: int = TARGET_CLIP_COUNT, script_data: di
 
             for video in videos:
                 if len(valid_clips) >= target_count:
+                    break
+                if query_hits[query] >= MAX_CLIPS_PER_QUERY:
+                    break
+                if bucket_hits.get(bucket, 0) >= MAX_CLIPS_PER_BUCKET:
                     break
 
                 vid_id = video.get("id")
@@ -308,6 +340,8 @@ def download(topic: dict, target_count: int = TARGET_CLIP_COUNT, script_data: di
                     continue
 
                 valid_clips.append(dest)
+                query_hits[query] += 1
+                bucket_hits[bucket] = bucket_hits.get(bucket, 0) + 1
                 logger.info("Downloaded valid clip %s (%.1fs %dx%d)",
                             dest.name, meta["duration"], meta["width"], meta["height"])
                 time.sleep(0.2)  # polite rate limiting
@@ -315,5 +349,5 @@ def download(topic: dict, target_count: int = TARGET_CLIP_COUNT, script_data: di
     if not valid_clips:
         raise RuntimeError("No valid clips downloaded from Pexels")
 
-    logger.info("Downloaded %d valid clips", len(valid_clips))
+    logger.info("Downloaded %d valid clips across %d visual buckets", len(valid_clips), len(bucket_hits))
     return valid_clips

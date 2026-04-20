@@ -101,3 +101,12 @@ def test_retime_overlays_for_script_edit_scales_positions():
     assert overlays[0]["start_word"] == 0
     assert overlays[1]["start_word"] < 50
     assert overlays[2]["start_word"] == max(112 - int(3.0 * sw.WPS), 0)
+
+
+def test_normalize_text_preserves_finance_acronym_casing():
+    assert sw._normalize_text("apr vs apy for ira", "fallback") == "APR vs APY for IRA"
+
+
+def test_word_budget_defaults_match_short_target_window():
+    assert sw.MIN_WORDS >= 80
+    assert sw.MAX_WORDS <= 110

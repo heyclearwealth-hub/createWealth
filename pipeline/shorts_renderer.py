@@ -35,14 +35,14 @@ SHORT_W = 1080
 SHORT_H = 1920
 
 WPS = 2.5               # words per second at voiceover pace
-MAX_VISUAL_GAP_S = 2.0  # max seconds of blank screen before injecting a cadence label
+MAX_VISUAL_GAP_S = 1.7  # max seconds of blank screen before injecting a cadence label
 MAX_LINE_CHARS = 20     # fallback char-wrap width (word-boundary fallback only)
 TARGET_LOUDNESS = -14.0  # YouTube Shorts normalises to -14 dB LUFS on mobile
 BG_FRAME_FPS = 6.0      # background frame extraction rate (higher = smoother motion)
 BG_CADENCE_S = 0.5      # background refresh cadence for segment generation
-BG_MIN_CUT_S = 1.5
-BG_MAX_CUT_S = 3.0
-BG_ABS_MAX_SHOT_S = 4.0
+BG_MIN_CUT_S = 0.9
+BG_MAX_CUT_S = 1.9
+BG_ABS_MAX_SHOT_S = 2.2
 BG_TARGET_CLIPS = 10
 BG_MIN_SOURCES = 2
 BG_MAX_PER_QUERY = 2
@@ -53,6 +53,19 @@ LABEL_MIN_GAP_S = 0.35
 CTA_SAFE_TAIL_S = 3.0
 MAX_CADENCE_LABELS = 8   # cap on auto-injected cadence labels — more causes cognitive overload
 MIX_TRUE_PEAK_TARGET = -3.0
+SHORT_MIN_DURATION_S = float(os.environ.get("SHORT_MIN_DURATION_S", "34"))
+SHORT_MAX_DURATION_S = float(os.environ.get("SHORT_MAX_DURATION_S", "44"))
+BG_BRIGHTNESS = -0.12
+BG_SATURATION = 0.92
+BG_BLUR = "1:1"
+HOOK_INTERRUPT_AT_S = 0.55
+HOOK_INTERRUPT_DURATION_S = 1.15
+HOOK_SCENE_DEADLINE_S = 1.0
+FREEZE_WARN_MIN_S = 0.75
+FREEZE_WARN_TOTAL_S = 2.4
+MIN_VIDEO_BITRATE = "6M"
+MAX_VIDEO_BITRATE = "8M"
+VIDEO_BUF_SIZE = "12M"
 
 GENERIC_LABEL_TEXTS = {
     "REAL EXAMPLE",
@@ -91,6 +104,7 @@ ADVICE_SIGNAL_RE = re.compile(
     r"\b(you should|do this|avoid this|buy|sell|max out|open (?:a|an)|start now)\b",
     re.IGNORECASE,
 )
+from pipeline.text_utils import fix_finance_acronyms as _fix_finance_acronyms
 
 # Import pillar gradients from thumbnail_gen to keep a single source of truth.
 # New pillars added there will automatically apply here too.
@@ -138,6 +152,22 @@ def _get_font(size: int):
 
 def _clean_text(value: str) -> str:
     return " ".join(str(value or "").split()).strip()
+
+
+
+def _clean_overlay_copy(text: str, sentence_case: bool = False) -> str:
+    cleaned = _fix_finance_acronyms(_clean_text(text))
+    cleaned = re.sub(r"\s+([,.!?])", r"\1", cleaned)
+    if sentence_case and cleaned and cleaned[0].isalpha() and cleaned.upper() != cleaned:
+        cleaned = cleaned[0].upper() + cleaned[1:]
+    return cleaned
+
+
+def _caption_display_word(word: str, capitalize: bool = False) -> str:
+    display = _fix_finance_acronyms(str(word or ""))
+    if capitalize and display and display[0].isalpha() and display.upper() != display:
+        display = display[0].upper() + display[1:]
+    return display
 
 
 def _text_width(draw, text: str, font) -> int:
@@ -356,10 +386,14 @@ def _make_spoken_caption_image(
 
     y = y0
     for line in lines:
-        line_text = " ".join(wd for wd, _ in line)
+        display_line = [
+            (_caption_display_word(word, capitalize=(idx_pos == 0)), idx)
+            for idx_pos, (word, idx) in enumerate(line)
+        ]
+        line_text = " ".join(wd for wd, _ in display_line)
         line_w = _text_width(draw, line_text, font)
         x = (w - line_w) // 2
-        for i, (word, idx) in enumerate(line):
+        for i, (word, idx) in enumerate(display_line):
             if i > 0:
                 x += space_w
             fill = (255, 220, 50, 255) if idx == active_idx else (255, 255, 255, 245)
@@ -562,15 +596,15 @@ def _fetch_pexels_clips(
 
 def _prepare_bg_video(raw_clip: Path, work_dir: Path, duration: float, tag: str = "0") -> Path:
     """
-    Crop to 9:16, darken, loop/trim to `duration`. Returns processed video path.
-    The darkening (brightness=-0.25) ensures text stays legible over any footage.
+    Crop to 9:16, lightly darken, loop/trim to `duration`. Returns processed video path.
+    We keep footage brighter than before to improve feed-stop visibility on mobile.
     """
     out = work_dir / f"bg_processed_{tag}.mp4"
     vf = (
         f"scale={SHORT_W}:{SHORT_H}:force_original_aspect_ratio=increase,"
         f"crop={SHORT_W}:{SHORT_H},"
-        "eq=brightness=-0.25:saturation=0.80,"
-        "boxblur=2:2"
+        f"eq=brightness={BG_BRIGHTNESS}:saturation={BG_SATURATION},"
+        f"boxblur={BG_BLUR}"
     )
     cmd = [
         _bin("ffmpeg"), "-y",
@@ -591,19 +625,26 @@ def _prepare_bg_video(raw_clip: Path, work_dir: Path, duration: float, tag: str 
 
 def _build_bg_montage_plan(duration_s: float, source_count: int, seed_hint: str = "") -> list[tuple[float, float, int]]:
     """
-    Build pacing plan: frequent cuts (1.5s–3.0s), never longer than 4s.
-    Avoids repeating the same source within the last 2 shots to prevent visible recycling.
+    Build pacing plan tuned for Shorts retention:
+    - guaranteed early first cut (<1s) so the opening does not feel static
+    - fast cuts thereafter
+    - avoid repeating a source in the last few shots
     Returns list of (start, end, source_idx).
     """
     if source_count <= 0:
         return []
     rng = random.Random(f"{seed_hint}:{duration_s:.2f}:{source_count}")
     t = 0.0
-    recent: list[int] = []   # tracks last min(2, source_count-1) used indices
-    avoid_n = min(2, max(1, source_count - 1))
+    recent: list[int] = []   # tracks last min(3, source_count-1) used indices
+    avoid_n = min(3, max(1, source_count - 1))
     plan: list[tuple[float, float, int]] = []
     while t < duration_s:
-        shot = min(rng.uniform(BG_MIN_CUT_S, BG_MAX_CUT_S), BG_ABS_MAX_SHOT_S, duration_s - t)
+        remaining = duration_s - t
+        if not plan:
+            shot = min(0.75, remaining)
+        else:
+            shot = min(rng.uniform(BG_MIN_CUT_S, BG_MAX_CUT_S), BG_ABS_MAX_SHOT_S, remaining)
+        shot = max(0.35, shot)
         choices = list(range(source_count))
         for prev in recent[-avoid_n:]:
             if prev in choices and len(choices) > 1:
@@ -949,6 +990,41 @@ def _inject_proof_tags(
     return result
 
 
+def _inject_hook_interrupt(overlays: list[dict], duration_s: float, pillar: str = "") -> list[dict]:
+    """
+    Ensure at least one non-hook visual event lands in the first second.
+    This lowers early swipe risk when only a static hook card is present.
+    """
+    if duration_s <= 1.2:
+        return overlays
+    result = list(overlays)
+    hook = next(
+        (ov for ov in result if ov.get("type") == "hook_number" and _ov_start(ov) <= 0.35),
+        None,
+    )
+    if not hook:
+        return result
+    has_early_non_hook = any(
+        ov.get("type") != "hook_number" and _ov_start(ov) <= 0.9
+        for ov in result
+    )
+    if has_early_non_hook:
+        return result
+    labels = _PILLAR_CADENCE_LABELS.get(pillar, _DEFAULT_CADENCE_LABELS)
+    text = labels[0] if labels else "WATCH THIS"
+    start = min(max(0.35, _ov_start(hook) + HOOK_INTERRUPT_AT_S), duration_s - 0.9)
+    dur = min(HOOK_INTERRUPT_DURATION_S, max(0.8, duration_s - start - 0.1))
+    result.append(
+        {
+            "type": "label",
+            "text": text,
+            "start_time_s": round(start, 3),
+            "duration_s": round(dur, 2),
+        }
+    )
+    return result
+
+
 def _check_label_overlaps(overlays: list[dict]) -> list[str]:
     """Return warning strings for any label windows that visually overlap in time."""
     labels = [(ov, _ov_start(ov), _ov_end(ov)) for ov in overlays if ov.get("type") == "label"]
@@ -1035,6 +1111,17 @@ def _sanitize_overlays(
         cleaned["start_word"] = start_word
         cleaned["start_time_s"] = round(start_time_s, 3)
         cleaned["duration_s"] = dur
+        if kind == "hook_number":
+            cleaned["text"] = _clean_overlay_copy(cleaned.get("text", ""))
+            if "subtitle" in cleaned:
+                cleaned["subtitle"] = _clean_overlay_copy(cleaned.get("subtitle", ""), sentence_case=True)
+        elif kind == "label":
+            cleaned["text"] = _clean_overlay_copy(cleaned.get("text", ""))
+        elif kind == "comparison":
+            cleaned["left"] = _clean_overlay_copy(cleaned.get("left", ""), sentence_case=True)
+            cleaned["right"] = _clean_overlay_copy(cleaned.get("right", ""), sentence_case=True)
+        elif kind == "cta":
+            cleaned["text"] = _clean_overlay_copy(cleaned.get("text", ""), sentence_case=True)
         safe.append(cleaned)
     safe.sort(key=lambda item: item["start_time_s"])
     return safe
@@ -1161,6 +1248,50 @@ def _mean_volume_db(path: Path) -> tuple[float | None, float | None]:
     return mean_db, max_db
 
 
+def _freeze_durations(path: Path) -> list[float]:
+    result = subprocess.run(
+        [
+            _bin("ffmpeg"),
+            "-hide_banner",
+            "-i",
+            str(path),
+            "-vf",
+            f"freezedetect=n=0.003:d={FREEZE_WARN_MIN_S}",
+            "-an",
+            "-f",
+            "null",
+            "-",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    text = (result.stderr or "") + "\n" + (result.stdout or "")
+    return [float(m.group(1)) for m in re.finditer(r"freeze_duration:\s*([0-9.]+)", text)]
+
+
+def _scene_change_times(path: Path) -> list[float]:
+    result = subprocess.run(
+        [
+            _bin("ffmpeg"),
+            "-hide_banner",
+            "-i",
+            str(path),
+            "-filter:v",
+            "select='gt(scene,0.25)',metadata=print",
+            "-an",
+            "-f",
+            "null",
+            "-",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    text = (result.stderr or "") + "\n" + (result.stdout or "")
+    return [float(m.group(1)) for m in re.finditer(r"pts_time:([0-9.]+)", text)]
+
+
 # ---------------------------------------------------------------------------
 # Video probe / quality gate
 # ---------------------------------------------------------------------------
@@ -1199,6 +1330,27 @@ def _quality_gate(output_path: Path, expected_duration: float) -> None:
         logger.warning(
             "Audio peak %.1f dB exceeds -3 dBTP — may sound flat after YouTube loudness normalization",
             max_db,
+        )
+    freeze_durations = _freeze_durations(output_path)
+    if freeze_durations:
+        freeze_total = sum(freeze_durations)
+        if freeze_total > FREEZE_WARN_TOTAL_S * 2:
+            raise RuntimeError(
+                f"Quality gate failed: {freeze_total:.1f}s of freeze detected "
+                f"(hard limit {FREEZE_WARN_TOTAL_S * 2:.1f}s) — b-roll clips too static."
+            )
+        if freeze_total > FREEZE_WARN_TOTAL_S:
+            logger.warning(
+                "Freeze detector found %.2fs of stillness (%.2fs threshold) — reduce repeated/still b-roll",
+                freeze_total,
+                FREEZE_WARN_TOTAL_S,
+            )
+    scene_times = _scene_change_times(output_path)
+    if scene_times and scene_times[0] > HOOK_SCENE_DEADLINE_S:
+        logger.warning(
+            "First detected scene change at %.2fs (>%.2fs) — add a faster opening pattern interrupt",
+            scene_times[0],
+            HOOK_SCENE_DEADLINE_S,
         )
 
 
@@ -1248,9 +1400,10 @@ def render(
 
     vo_duration = _get_voiceover_duration(voiceover_path)
     logger.info("Short voiceover duration: %.1fs", vo_duration)
-    if not (35.0 <= vo_duration <= 65.0):
+    if not (SHORT_MIN_DURATION_S <= vo_duration <= SHORT_MAX_DURATION_S):
         raise RuntimeError(
-            f"Voiceover duration {vo_duration:.1f}s is outside the 35–65s target range. "
+            f"Voiceover duration {vo_duration:.1f}s is outside the "
+            f"{SHORT_MIN_DURATION_S:.0f}–{SHORT_MAX_DURATION_S:.0f}s target range. "
             "Check the script word count or TTS speed settings."
         )
 
@@ -1310,6 +1463,7 @@ def render(
 
     # Step 1: clean overlays from script
     overlays = _sanitize_overlays(script_data.get("overlays", []), vo_duration, word_timestamps)
+    overlays = _inject_hook_interrupt(overlays, vo_duration, pillar=pillar)
 
     # Step 2: inject cadence labels into actual visual gaps (pillar-specific copy)
     _overlays_before_cadence = len(overlays)
@@ -1474,7 +1628,8 @@ def render(
 
     full_filter = (
         f"[0:v]fps=30,setsar=1[bg_fps];"
-        f"[bg_fps][1:v]overlay=format=auto:shortest=1[v];"
+        f"[bg_fps][1:v]overlay=format=auto:shortest=1[v_base];"
+        "[v_base]eq=brightness=0.03:saturation=1.08,unsharp=5:5:0.55:5:5:0.0[v];"
         f"{audio_filter}"
     )
 
@@ -1490,6 +1645,9 @@ def render(
         "-pix_fmt", "yuv420p",
         "-profile:v", "high",
         "-g", "60",
+        "-b:v", MIN_VIDEO_BITRATE,
+        "-maxrate", MAX_VIDEO_BITRATE,
+        "-bufsize", VIDEO_BUF_SIZE,
         "-c:a", "aac", "-b:a", "160k", "-ac", "2",
         "-movflags", "+faststart",
         str(output_path),

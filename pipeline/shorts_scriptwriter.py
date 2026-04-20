@@ -1,5 +1,5 @@
 """
-shorts_scriptwriter.py — Generates standalone YouTube Shorts scripts (45–55s)
+shorts_scriptwriter.py — Generates standalone YouTube Shorts scripts (35–43s)
 via Claude Haiku. Text-animation style: no B-roll, bold numbers, quick cuts.
 
 Output JSON includes:
@@ -29,8 +29,8 @@ MODEL = os.environ.get("ANTHROPIC_MODEL", DEFAULT_MODEL)
 LAST_SHORTS_FILE = Path("data/last_shorts.json")
 MAX_SHORTS_MEMORY = 120
 WPS = 2.5  # words per second at voiceover pace
-MIN_WORDS = 115
-MAX_WORDS = 125
+MIN_WORDS = 95
+MAX_WORDS = 103
 MIN_OVERLAYS = 6
 MAX_OVERLAYS = 10
 MAX_TEXT_CHARS = 34
@@ -95,18 +95,13 @@ FINANCE_TOPICS = [
     {"topic": "dollar cost averaging", "pillar": "investing", "angle": "how consistency beats market timing stress"},
     {"topic": "S&P 500 vs total market", "pillar": "investing", "angle": "when broad diversification quietly wins"},
     {"topic": "HSA triple tax advantage", "pillar": "tax", "angle": "the one account with three tax benefits"},
-    {"topic": "backdoor Roth IRA", "pillar": "tax", "angle": "high earners can still access Roth growth"},
-    {"topic": "529 plan basics", "pillar": "investing", "angle": "small monthly deposits can reduce future student debt"},
     {"topic": "401k vesting schedule", "pillar": "career_income", "angle": "how leaving a job too early can forfeit money"},
-    {"topic": "ESPP discount math", "pillar": "career_income", "angle": "when employee stock discounts are worth taking"},
     {"topic": "job hopping salary growth", "pillar": "career_income", "angle": "why switching roles can outpace annual raises"},
     {"topic": "raise vs bonus tax impact", "pillar": "tax", "angle": "why your bonus feels smaller than expected"},
     {"topic": "W-4 withholding reset", "pillar": "tax", "angle": "the payroll setting that prevents surprise tax bills"},
     {"topic": "capital gains tax basics", "pillar": "tax", "angle": "holding period can change what you owe"},
-    {"topic": "RMD rules explained", "pillar": "tax", "angle": "missing required withdrawals triggers costly penalties"},
     {"topic": "credit utilization rule", "pillar": "debt", "angle": "keeping balances low can lift your score faster"},
     {"topic": "balance transfer card math", "pillar": "debt", "angle": "when a 0 percent transfer actually saves money"},
-    {"topic": "APR vs APY", "pillar": "debt", "angle": "the hidden difference that changes total interest paid"},
     {"topic": "sinking funds method", "pillar": "budgeting", "angle": "prevent big expenses from becoming new debt"},
     {"topic": "zero based budgeting", "pillar": "budgeting", "angle": "give every dollar a job before the month starts"},
     {"topic": "pay yourself first", "pillar": "budgeting", "angle": "automate savings before spending can steal it"},
@@ -123,6 +118,7 @@ _CLIENT_API_KEY = None
 
 HOOK_STATS_FILE = Path("data/hook_stats.json")
 _HOOK_STATS_CACHE: dict | None = None
+from pipeline.text_utils import ACRONYM_PATTERNS as _ACRONYM_PATTERNS
 
 
 def _load_stat_bank() -> dict:
@@ -250,7 +246,9 @@ def _pick_topic(used_topics: list[str] | None = None) -> dict:
 def _get_client():
     """Create Anthropic client once per API key for connection reuse."""
     global _CLIENT, _CLIENT_API_KEY
-    api_key = os.environ["ANTHROPIC_API_KEY"]
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise EnvironmentError("ANTHROPIC_API_KEY not set")
     if _CLIENT is None or _CLIENT_API_KEY != api_key:
         _CLIENT = anthropic.Anthropic(api_key=api_key)
         _CLIENT_API_KEY = api_key
@@ -292,15 +290,28 @@ def _call_claude(prompt: str, temperature: float = 0.8) -> str:
 def _extract_json(raw: str) -> dict:
     raw = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.IGNORECASE)
     raw = re.sub(r"\s*```$", "", raw.strip())
-    match = re.search(r"\{.*\}", raw, re.DOTALL)
-    if not match:
-        raise ValueError("No JSON object found in response")
-    return json.loads(match.group())
+    # Find the first '{' and walk forward to find the matching closing '}'.
+    # This avoids the greedy-regex trap where two JSON blocks get merged.
+    start = raw.find("{")
+    if start == -1:
+        raise ValueError("No JSON object found in Claude response")
+    depth = 0
+    for i, ch in enumerate(raw[start:], start):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return json.loads(raw[start : i + 1])
+    raise ValueError("Unbalanced JSON braces in Claude response")
+
+
+_BRACKET_RE = re.compile(r"\[[^\]]+\]")
 
 
 def _clean_script_text(script: str) -> str:
     """Return spoken text only, without stage markers (strips all [...] brackets)."""
-    return re.sub(r"\[[^\]]+\]", " ", script or "").strip()
+    return _BRACKET_RE.sub(" ", script or "").strip()
 
 
 def _word_count(script: str) -> int:
@@ -321,6 +332,9 @@ def _normalize_text(value: str, fallback: str) -> str:
     text = " ".join(str(value or "").split()).strip()
     if not text:
         text = fallback
+    for pattern, replacement in _ACRONYM_PATTERNS:
+        text = pattern.sub(replacement, text)
+    text = re.sub(r"\s+([,.!?])", r"\1", text)
     if len(text) > MAX_TEXT_CHARS:
         text = text[: MAX_TEXT_CHARS - 3].rsplit(" ", 1)[0].rstrip() + "..."
     return text
@@ -449,12 +463,24 @@ def _loop_ending_line(script: str) -> str:
 
     if core_insight:
         short_core = " ".join(core_insight.split()[:5]).rstrip(".,!?")
-        return f"Replay and apply this: {short_core}."
+        seed = sum(ord(c) for c in short_core) % 4
+        frames = [
+            f"Most people hear '{short_core}' and do nothing. Be the exception.",
+            f"If '{short_core}' surprised you, rewatch from the start.",
+            f"That's the piece most people skip. Now you know.",
+            f"'{short_core}' — that's the part that changes everything.",
+        ]
+        return frames[seed]
     # Fallback: find a mid-script number (skip the first one, which is the hook).
-    # Referencing the hook number again in the loop ending provides no new curiosity trigger.
     all_numbers = re.findall(r"\$?\d[\d,]*(?:\.\d+)?%?", _clean_script_text(script))
     mid_number = all_numbers[1] if len(all_numbers) >= 2 else (all_numbers[0] if all_numbers else "this")
-    return f"Seriously, watch this again: the {mid_number} number hits different on second watch."
+    seed = sum(ord(c) for c in mid_number) % 3
+    fallbacks = [
+        f"That {mid_number} number? Most people never do the math. Now you can.",
+        f"Run your own numbers. Start with {mid_number}.",
+        f"The {mid_number} is the part your bank hopes you ignore.",
+    ]
+    return fallbacks[seed]
 
 
 def _enforce_loop_ending(script: str) -> str:
@@ -917,9 +943,13 @@ def _retention_prompt_block(retention_feedback: dict | None) -> str:
 def _coerce_start_word(value, max_words: int, default: int = 0) -> int:
     try:
         parsed = int(value)
+        if parsed < 0 or parsed >= max_words:
+            logger.warning("start_word out of range: %d (max %d) — clamped", parsed, max_words)
+            parsed = default
     except (TypeError, ValueError):
+        logger.warning("start_word is not an integer: %r — using default %d", value, default)
         parsed = default
-    return max(0, min(max(parsed, 0), max(0, max_words - 1)))
+    return max(0, min(parsed, max(0, max_words - 1)))
 
 
 def _coerce_duration(value, kind: str) -> float:
@@ -1164,7 +1194,7 @@ PILLAR: {topic["pillar"]}
 {retention_block}
 
 FORMAT RULES:
-- Total voiceover: 45–55 seconds (MINIMUM {MIN_WORDS} words, TARGET {MIN_WORDS + 5}–{MAX_WORDS - 2} words, MAXIMUM {MAX_WORDS} words at ~2.5 words/sec)
+- Total voiceover: 38–41 seconds (MINIMUM {MIN_WORDS} words, TARGET {MIN_WORDS + 3}–{MAX_WORDS - 1} words, MAXIMUM {MAX_WORDS} words at ~2.5 words/sec)
 - Count your words before finalising — scripts under {MIN_WORDS} words will be rejected
 - The VERY FIRST spoken token must contain a number or dollar amount
 - The first 1.2 seconds must include: (1) number, (2) pain/problem, (3) consequence if ignored
@@ -1184,7 +1214,7 @@ OVERLAY RULES:
 - Plan {MIN_OVERLAYS}–{MAX_OVERLAYS} overlays total.
 - Label overlays must be concise: 2–5 words, no ellipses.
 - Every key number must have an overlay.
-- There must be no dead visual gap longer than 2.5s.
+- There must be no dead visual gap longer than 2.0s.
 
 Return ONLY this JSON, no explanation:
 {{

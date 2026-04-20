@@ -2,10 +2,10 @@ name: shorts-original
 
 on:
   schedule:
-    # Short 1: 10:00 UTC daily
-    - cron: "0 10 * * *"
-    # Short 2: 18:00 UTC daily
-    - cron: "0 18 * * *"
+    # Short 1: 14:00 UTC = 9am EST / 10am EDT — US morning peak
+    - cron: "0 14 * * *"
+    # Short 2: 22:00 UTC = 5pm EST / 6pm EDT — US evening peak
+    - cron: "0 22 * * *"
   workflow_dispatch:
     inputs:
       topic:
@@ -16,7 +16,7 @@ on:
         default: "0"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   generate-short:
@@ -65,6 +65,17 @@ jobs:
           fi
 
           python scripts/run_shorts_original.py "${TOPIC_ARG[@]}" "${DRY_RUN_FLAG[@]}"
+
+      - name: Persist topic memory
+        if: success()
+        run: |
+          if ! git diff --quiet data/last_shorts.json 2>/dev/null; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add data/last_shorts.json
+            git commit -m "chore: update last_shorts topic memory [skip ci]"
+            git push
+          fi
 
       - name: Upload Short artifact
         if: always()

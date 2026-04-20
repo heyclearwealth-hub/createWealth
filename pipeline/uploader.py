@@ -39,12 +39,19 @@ _RISKY_PACKAGING_PATTERNS = [
     re.compile(r"\b(double|triple)\s+your\s+money\b", re.IGNORECASE),
     re.compile(r"\b\d{2,}%\s*(?:daily|weekly|monthly|return|profit)\b", re.IGNORECASE),
     re.compile(r"\byou\s+will\s+(?:make|earn)\b", re.IGNORECASE),
+    re.compile(r"\bmake\s+money\s+fast\b", re.IGNORECASE),
+    re.compile(r"\bpassive\s+income\b", re.IGNORECASE),
+    re.compile(r"\b(proven|tested|verified)\s+system\b", re.IGNORECASE),
+    re.compile(r"\b(?:unlimited|zero)\s+risk\b", re.IGNORECASE),
+    re.compile(r"[💰💸🤑]{2,}"),
 ]
 _UPLOAD_TITLE_BLOCK_PATTERNS = [
     re.compile(r"\bguarantee(?:d)?\b", re.IGNORECASE),
     re.compile(r"\brisk[- ]?free\b", re.IGNORECASE),
     re.compile(r"\bget\s+rich(?:\s+quick)?\b", re.IGNORECASE),
     re.compile(r"\bmake\s*\$?\s*\d[\d,]*(?:\.\d+)?\s*(?:/|per)?\s*(?:a\s+)?(?:day|daily)\b", re.IGNORECASE),
+    re.compile(r"\bmake\s+money\s+fast\b", re.IGNORECASE),
+    re.compile(r"\bpassive\s+income\s+guaranteed\b", re.IGNORECASE),
 ]
 
 
@@ -266,9 +273,11 @@ def upload(pipeline_json: dict, video_path: Path = OUTPUT_PATH) -> str:
         full_description = full_description[:4797] + "..."
     tags = _sanitize_tags(pipeline_json.get("tags", []))
     pillar = pipeline_json.get("pillar", "")
-    video_privacy = os.environ.get("VIDEO_PRIVACY_STATUS") or "unlisted"
-    if not os.environ.get("VIDEO_PRIVACY_STATUS"):
-        logger.warning("VIDEO_PRIVACY_STATUS not set — defaulting to 'unlisted'. Set to 'public' when ready.")
+    video_privacy = os.environ.get("VIDEO_PRIVACY_STATUS", "").strip().lower()
+    if video_privacy not in ("public", "unlisted", "private"):
+        raise EnvironmentError(
+            f"VIDEO_PRIVACY_STATUS must be 'public', 'unlisted', or 'private' — got '{video_privacy or '(not set)'}'"
+        )
 
     series_map = _load_series_map()
     playlist_id = series_map.get(pillar, {}).get("playlist_id", "")
@@ -290,6 +299,9 @@ def upload(pipeline_json: dict, video_path: Path = OUTPUT_PATH) -> str:
         "thumbnail_path": str(thumbnail_path) if thumbnail_path else "",
     }
 
+    # Safety gate runs unconditionally — catches bad titles in dry-run too
+    _assert_upload_title_safe(title)
+
     if DRY_RUN:
         if not video_path.exists():
             raise FileNotFoundError(
@@ -302,9 +314,6 @@ def upload(pipeline_json: dict, video_path: Path = OUTPUT_PATH) -> str:
         logger.info("DRY_RUN: upload payload written to %s", dry_path)
         _record_upload("dry-run", pipeline_json, title, candidates, default_idx)
         return "dry-run"
-
-    # Real upload
-    _assert_upload_title_safe(title)
     quota_guard.assert_budget("videos.insert")
 
     yt = _youtube_service()

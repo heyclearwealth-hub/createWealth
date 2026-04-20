@@ -81,10 +81,14 @@ def _titles_for_video(video_entry: dict) -> list[str]:
 
 
 def _safe_float(value, default=0.0) -> float:
-    try:
+    if isinstance(value, (int, float)):
         return float(value)
-    except (TypeError, ValueError):
-        return default
+    if isinstance(value, str):
+        try:
+            return float(value.rstrip("%"))
+        except ValueError:
+            pass
+    return default
 
 
 def _thumbnail_variants_for_video(video_entry: dict) -> list[str]:

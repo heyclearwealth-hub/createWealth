@@ -106,3 +106,25 @@ def test_needs_financial_disclaimer_false_for_non_finance_copy():
         "voiceover_script": "Pack light and enjoy the trail.",
     }
     assert sr._needs_financial_disclaimer(overlays, script_data) is False
+
+
+def test_build_bg_montage_plan_starts_with_fast_cut():
+    plan = sr._build_bg_montage_plan(duration_s=20.0, source_count=4, seed_hint="apr-apy")
+    assert plan
+    first_start, first_end, _ = plan[0]
+    assert first_start == 0.0
+    assert first_end <= 0.8
+
+
+def test_caption_display_word_uppercases_finance_acronyms():
+    assert sr._caption_display_word("apr") == "APR"
+    assert sr._caption_display_word("apy") == "APY"
+    assert sr._caption_display_word("ira") == "IRA"
+
+
+def test_inject_hook_interrupt_adds_early_label_when_missing():
+    overlays = [{"type": "hook_number", "text": "0.5%", "start_time_s": 0.0, "duration_s": 4.0}]
+    patched = sr._inject_hook_interrupt(overlays, duration_s=40.0, pillar="debt")
+    labels = [ov for ov in patched if ov.get("type") == "label"]
+    assert labels
+    assert sr._ov_start(labels[0]) <= 1.0
