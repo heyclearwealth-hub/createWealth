@@ -45,6 +45,9 @@ HOOK_CONSEQUENCE_TERMS = {
     "cost", "costs", "later", "future", "retirement", "years", "forever", "overpay",
     "wealth", "freedom", "growth", "compound", "thousands", "millions",
     "worth", "net worth", "broke", "zero",
+    # Emergency/short-term consequence vocabulary — needed for emergency fund, debt topics
+    "debt", "cover", "short", "drain", "drained", "wipe", "wiped", "bankrupt", "struggle",
+    "unprepared", "crash", "gone", "depleted",
 }
 TITLE_POWER_TERMS = {
     "why", "how", "mistake", "truth", "secret", "stop", "before", "after", "lose", "save",
@@ -474,10 +477,10 @@ def assess_hook_strength(script: str) -> tuple[bool, str]:
     """
     Hook quality gate:
     1. First word (index 0-2) must contain a number — viewer must see the stat before 1.2s.
-    2. First 14 words must include a pain term and a consequence term.
+    2. First 16 words must include a pain term and a consequence term.
     """
     tokens = re.findall(r"[A-Za-z0-9$%']+", _clean_script_text(script))
-    hook_tokens = tokens[:14]
+    hook_tokens = tokens[:16]
     hook_text = " ".join(hook_tokens).lower()
 
     # Rule 1: number must appear in the first 3 tokens (≤1.2s at 2.5 WPS)
