@@ -1,5 +1,6 @@
 """Unit tests for shorts_renderer.py."""
 from PIL import Image
+import pytest
 
 import pipeline.shorts_renderer as sr
 
@@ -133,3 +134,35 @@ def test_inject_hook_interrupt_adds_early_label_when_missing():
     labels = [ov for ov in patched if ov.get("type") == "label"]
     assert labels
     assert sr._ov_start(labels[0]) <= 1.0
+
+
+def test_compute_voiceover_autofit_rate_for_small_overshoot(monkeypatch):
+    monkeypatch.setattr(sr, "SHORT_MIN_DURATION_S", 34.0)
+    monkeypatch.setattr(sr, "SHORT_MAX_DURATION_S", 44.0)
+    monkeypatch.setattr(sr, "SHORT_AUTOFIT_TARGET_MARGIN_S", 0.2)
+    monkeypatch.setattr(sr, "SHORT_AUTOFIT_MIN_RATE", 0.90)
+    monkeypatch.setattr(sr, "SHORT_AUTOFIT_MAX_RATE", 1.15)
+    rate = sr._compute_voiceover_autofit_rate(46.0)
+    assert rate is not None
+    assert rate == pytest.approx(46.0 / 43.8, rel=1e-6)
+
+
+def test_compute_voiceover_autofit_rate_none_for_large_miss(monkeypatch):
+    monkeypatch.setattr(sr, "SHORT_MIN_DURATION_S", 34.0)
+    monkeypatch.setattr(sr, "SHORT_MAX_DURATION_S", 44.0)
+    monkeypatch.setattr(sr, "SHORT_AUTOFIT_TARGET_MARGIN_S", 0.2)
+    monkeypatch.setattr(sr, "SHORT_AUTOFIT_MIN_RATE", 0.90)
+    monkeypatch.setattr(sr, "SHORT_AUTOFIT_MAX_RATE", 1.15)
+    assert sr._compute_voiceover_autofit_rate(60.0) is None
+
+
+def test_atempo_filter_chain_handles_large_rates():
+    chain = sr._atempo_filter_chain(2.5)
+    assert chain == "atempo=2.00000,atempo=1.25000"
+
+
+def test_retime_word_timestamps_scales_for_speedup():
+    scaled = sr._retime_word_timestamps([0.0, 1.0, 2.5], speed_rate=1.25)
+    assert scaled[0] == 0.0
+    assert scaled[1] == pytest.approx(0.8, rel=1e-6)
+    assert scaled[2] == pytest.approx(2.0, rel=1e-6)

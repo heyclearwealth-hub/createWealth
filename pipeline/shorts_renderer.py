@@ -55,6 +55,10 @@ MAX_CADENCE_LABELS = 8   # cap on auto-injected cadence labels — more causes c
 MIX_TRUE_PEAK_TARGET = -3.0
 SHORT_MIN_DURATION_S = float(os.environ.get("SHORT_MIN_DURATION_S", "34"))
 SHORT_MAX_DURATION_S = float(os.environ.get("SHORT_MAX_DURATION_S", "44"))
+SHORT_AUTOFIT_VOICEOVER = os.environ.get("SHORT_AUTOFIT_VOICEOVER", "1").lower() in {"1", "true", "yes"}
+SHORT_AUTOFIT_TARGET_MARGIN_S = float(os.environ.get("SHORT_AUTOFIT_TARGET_MARGIN_S", "0.2"))
+SHORT_AUTOFIT_MIN_RATE = float(os.environ.get("SHORT_AUTOFIT_MIN_RATE", "0.90"))
+SHORT_AUTOFIT_MAX_RATE = float(os.environ.get("SHORT_AUTOFIT_MAX_RATE", "1.15"))
 BG_BRIGHTNESS = -0.12
 BG_SATURATION = 0.92
 BG_BLUR = "1:1"
@@ -1376,6 +1380,110 @@ def _get_voiceover_duration(path: Path) -> float:
     return float(json.loads(result.stdout)["format"]["duration"])
 
 
+def _compute_voiceover_autofit_rate(duration_s: float) -> float | None:
+    """
+    Return an atempo multiplier to pull duration into target range, or None when
+    no safe auto-fit should be attempted.
+    """
+    if SHORT_MIN_DURATION_S <= duration_s <= SHORT_MAX_DURATION_S:
+        return None
+    if duration_s <= 0:
+        return None
+
+    margin = max(0.0, SHORT_AUTOFIT_TARGET_MARGIN_S)
+    if duration_s > SHORT_MAX_DURATION_S:
+        target_duration = max(SHORT_MIN_DURATION_S + 0.1, SHORT_MAX_DURATION_S - margin)
+    else:
+        target_duration = min(SHORT_MAX_DURATION_S - 0.1, SHORT_MIN_DURATION_S + margin)
+
+    if target_duration <= 0:
+        return None
+
+    rate = duration_s / target_duration
+    if rate < SHORT_AUTOFIT_MIN_RATE or rate > SHORT_AUTOFIT_MAX_RATE:
+        return None
+    return rate
+
+
+def _atempo_filter_chain(rate: float) -> str:
+    """
+    Build an FFmpeg atempo chain for a combined speed multiplier.
+    """
+    rate = float(rate)
+    if rate <= 0:
+        raise ValueError("atempo rate must be > 0")
+    factors: list[float] = []
+    while rate > 2.0:
+        factors.append(2.0)
+        rate /= 2.0
+    while rate < 0.5:
+        factors.append(0.5)
+        rate /= 0.5
+    factors.append(rate)
+    return ",".join(f"atempo={factor:.5f}" for factor in factors)
+
+
+def _retime_word_timestamps(word_timestamps: list[float], speed_rate: float) -> list[float]:
+    if not word_timestamps:
+        return []
+    if speed_rate <= 0:
+        return list(word_timestamps)
+    return [max(0.0, float(ts) / speed_rate) for ts in word_timestamps]
+
+
+def _autofit_voiceover_duration(
+    voiceover_path: Path,
+    vo_duration: float,
+    word_timestamps: list[float],
+    work_dir: Path,
+) -> tuple[Path, float, list[float]]:
+    """
+    Auto-fit minor duration misses by applying atempo to voiceover and retiming
+    word timestamps. Returns the possibly-updated voiceover path/duration/timestamps.
+    """
+    if not SHORT_AUTOFIT_VOICEOVER:
+        return voiceover_path, vo_duration, word_timestamps
+
+    rate = _compute_voiceover_autofit_rate(vo_duration)
+    if rate is None:
+        return voiceover_path, vo_duration, word_timestamps
+
+    adjusted_voiceover = work_dir / f"{voiceover_path.stem}_autofit{voiceover_path.suffix or '.mp3'}"
+    filter_chain = _atempo_filter_chain(rate)
+    cmd = [
+        _bin("ffmpeg"),
+        "-y",
+        "-i",
+        str(voiceover_path),
+        "-vn",
+        "-filter:a",
+        filter_chain,
+        "-c:a",
+        "libmp3lame",
+        "-q:a",
+        "2",
+        str(adjusted_voiceover),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    if result.returncode != 0:
+        logger.warning(
+            "Voiceover auto-fit failed (rate %.3fx): %s",
+            rate,
+            result.stderr[-400:] if result.stderr else "unknown ffmpeg error",
+        )
+        return voiceover_path, vo_duration, word_timestamps
+
+    new_duration = _get_voiceover_duration(adjusted_voiceover)
+    new_timestamps = _retime_word_timestamps(word_timestamps, rate)
+    logger.info(
+        "Auto-fit voiceover duration %.1fs -> %.1fs (atempo %.3fx)",
+        vo_duration,
+        new_duration,
+        rate,
+    )
+    return adjusted_voiceover, new_duration, new_timestamps
+
+
 # ---------------------------------------------------------------------------
 # Main render entry point
 # ---------------------------------------------------------------------------
@@ -1412,7 +1520,16 @@ def render(
     work_dir.mkdir(parents=True, exist_ok=True)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
+    word_timestamps: list[float] = list(script_data.get("word_timestamps") or [])
     vo_duration = _get_voiceover_duration(voiceover_path)
+    voiceover_path, vo_duration, word_timestamps = _autofit_voiceover_duration(
+        voiceover_path,
+        vo_duration,
+        word_timestamps,
+        work_dir,
+    )
+    if word_timestamps:
+        script_data["word_timestamps"] = word_timestamps
     logger.info("Short voiceover duration: %.1fs", vo_duration)
     if not (SHORT_MIN_DURATION_S <= vo_duration <= SHORT_MAX_DURATION_S):
         raise RuntimeError(
@@ -1466,7 +1583,6 @@ def render(
     if bg_video is None:
         bg_video = _build_gradient_bg_video(bg_img, vo_duration, work_dir)
 
-    word_timestamps: list[float] = script_data.get("word_timestamps") or []
     if word_timestamps:
         logger.info("Using ElevenLabs word timestamps (%d words)", len(word_timestamps))
     else:
