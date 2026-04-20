@@ -16,6 +16,7 @@ import logging
 import os
 import random
 import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -255,13 +256,34 @@ def _get_client():
 
 def _call_claude(prompt: str, temperature: float = 0.8) -> str:
     client = _get_client()
-    response = client.messages.create(
-        model=MODEL,
-        max_tokens=2048,
-        temperature=temperature,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return response.content[0].text
+    last_exc: Exception | None = None
+    for attempt in range(3):
+        try:
+            response = client.messages.create(
+                model=MODEL,
+                max_tokens=2048,
+                temperature=temperature,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return response.content[0].text
+        except anthropic.APIStatusError as exc:
+            last_exc = exc
+            if exc.status_code in (429, 529):
+                wait = min(30, 4 ** attempt)
+                logger.warning("Claude API rate-limited (%d), waiting %ds", exc.status_code, wait)
+                time.sleep(wait)
+            elif exc.status_code >= 500:
+                wait = min(15, 2 ** attempt)
+                logger.warning("Claude API server error (%d), retrying in %ds", exc.status_code, wait)
+                time.sleep(wait)
+            else:
+                raise
+        except anthropic.APIConnectionError as exc:
+            last_exc = exc
+            wait = 2 ** attempt
+            logger.warning("Claude API connection error, retrying in %ds: %s", wait, exc)
+            time.sleep(wait)
+    raise RuntimeError(f"Claude API failed after 3 attempts: {last_exc}") from last_exc
 
 
 def _extract_json(raw: str) -> dict:
@@ -274,8 +296,8 @@ def _extract_json(raw: str) -> dict:
 
 
 def _clean_script_text(script: str) -> str:
-    """Return spoken text only, without stage markers."""
-    return re.sub(r"\[PAUSE\]", " ", script or "").strip()
+    """Return spoken text only, without stage markers (strips all [...] brackets)."""
+    return re.sub(r"\[[^\]]+\]", " ", script or "").strip()
 
 
 def _word_count(script: str) -> int:
@@ -745,16 +767,15 @@ def _finalize_short_payload(data: dict, topic: dict) -> dict:
     data["pillar"] = topic["pillar"]
 
     description = str(data.get("description", "")).strip()
-    # Keep mobile preview readable: remove leading hashtag spam if model emits it.
+    # Strip any leading hashtags the model may have emitted — we place them ourselves below.
     description = re.sub(r"^(?:\s*#[A-Za-z][A-Za-z0-9_]+\s*)+", "", description).strip()
     if "Educational only. Not financial advice." not in description:
         description = (description + " ⚠️ Educational only. Not financial advice.").strip()
-    # Append hashtags to description text so YouTube indexes them for hashtag-feed discovery.
-    # YouTube's `tags` API field is invisible metadata; only in-description hashtags appear
-    # in the hashtag feed (#Shorts, #PersonalFinance, etc.).
+
+    # Build hashtag list — normalise and deduplicate.
     hashtags = data.get("hashtags") or []
-    if isinstance(hashtags, list) and hashtags:
-        ht_parts: list[str] = []
+    ht_parts: list[str] = []
+    if isinstance(hashtags, list):
         for h in hashtags[:15]:
             tag = " ".join(str(h or "").split()).strip()
             if not tag:
@@ -763,8 +784,18 @@ def _finalize_short_payload(data: dict, topic: dict) -> dict:
                 tag = "#" + tag
             if tag not in ht_parts:
                 ht_parts.append(tag)
-        if ht_parts:
-            description = description + "\n\n" + " ".join(ht_parts)
+
+    # YouTube Shorts feed distribution: #Shorts must appear on the first line of the
+    # description so the video enters the hashtag feed. Put core tags on line 1,
+    # body + disclaimer next, remaining tags at the end.
+    if ht_parts:
+        core_tags = [t for t in ht_parts if t.lower() in {"#shorts", "#personalfinance", "#moneytips"}]
+        rest_tags = [t for t in ht_parts if t not in core_tags]
+        if "#Shorts" not in core_tags:
+            core_tags.insert(0, "#Shorts")
+        header = " ".join(core_tags)
+        footer = " ".join(rest_tags) if rest_tags else ""
+        description = header + "\n\n" + description + ("\n\n" + footer if footer else "")
     data["description"] = description
     return data
 
@@ -1074,7 +1105,7 @@ def _is_valid_short_shape(data: dict, topic: dict) -> tuple[bool, str]:
         return False, f"word-count out of range ({words}, expected {MIN_WORDS}-{MAX_WORDS})"
 
     first = _first_token(script)
-    if not re.search(r"[\d$%]", first):
+    if not re.search(r"[\d$]", first):
         return False, "hook does not start with a numeric token"
 
     titles = data.get("title_options", [])

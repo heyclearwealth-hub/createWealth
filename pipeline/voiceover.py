@@ -73,8 +73,10 @@ def _extract_word_start_times(alignment: dict, text: str) -> list[float]:
     # Return [] so callers get a hard fail (missing captions) rather than drifted captions.
     expected_words = len(re.findall(r"[A-Za-z0-9$%']+", text))
     if len(word_start_times) < expected_words:
-        logger.warning(
-            "Timestamp count mismatch: got %d, expected %d — discarding partial alignment",
+        logger.error(
+            "Timestamp alignment incomplete: got %d word timestamps, expected %d "
+            "— captions will use WPS fallback (expect ±0.5s drift). "
+            "Check ElevenLabs character alignment response.",
             len(word_start_times), expected_words,
         )
         return []
@@ -160,37 +162,53 @@ def generate_with_timestamps(
         **TTS_SETTINGS,
     }
 
+    import time as _time
+
     logger.info("Requesting TTS+timestamps for %.0f chars via ElevenLabs", len(clean_text))
-    try:
-        response = requests.post(url, json=payload, headers=headers, timeout=180)
-        if response.status_code != 200:
-            raise RuntimeError(response.text[:200])
-        data = response.json()
-        audio_b64 = data.get("audio_base64", "")
-        if not audio_b64:
-            raise RuntimeError("No audio_base64 in timestamps response")
-        audio_bytes = base64.b64decode(audio_b64)
-        with output_path.open("wb") as f:
-            f.write(audio_bytes)
+    last_exc: Exception | None = None
+    for attempt in range(2):
+        try:
+            response = requests.post(url, json=payload, headers=headers, timeout=180)
+            if response.status_code == 429:
+                wait = 10 * (attempt + 1)
+                logger.warning("ElevenLabs rate-limited, waiting %ds before retry", wait)
+                _time.sleep(wait)
+                last_exc = RuntimeError(f"ElevenLabs 429 rate-limit (attempt {attempt + 1})")
+                continue
+            if response.status_code != 200:
+                raise RuntimeError(f"ElevenLabs API {response.status_code}: {response.text[:200]}")
+            data = response.json()
+            audio_b64 = data.get("audio_base64", "")
+            if not audio_b64:
+                raise RuntimeError("No audio_base64 in timestamps response")
+            audio_bytes = base64.b64decode(audio_b64)
+            with output_path.open("wb") as f:
+                f.write(audio_bytes)
 
-        alignment = data.get("alignment") or data.get("normalized_alignment") or {}
-        word_times = _extract_word_start_times(alignment, clean_text)
+            alignment = data.get("alignment") or data.get("normalized_alignment") or {}
+            word_times = _extract_word_start_times(alignment, clean_text)
 
-        alignment_payload = {
-            "alignment": alignment,
-            "word_start_times": word_times,
-            "text": clean_text,
-        }
-        alignment_path.write_text(json.dumps(alignment_payload))
+            alignment_payload = {
+                "alignment": alignment,
+                "word_start_times": word_times,
+                "text": clean_text,
+            }
+            alignment_path.write_text(json.dumps(alignment_payload))
 
-        logger.info("Voiceover+timestamps saved (%d words)", len(word_times))
-        return output_path, word_times
-    except Exception as exc:
-        logger.error(
-            "Timestamps failed (%s) — falling back to basic TTS. "
-            "Word-synced captions will NOT be available for this render. "
-            "Check ELEVENLABS_API_KEY and network connectivity.",
-            exc,
-        )
-        path = generate(script, output_path=output_path, voice_id=voice_id)
-        return path, []
+            logger.info("Voiceover+timestamps saved (%d words)", len(word_times))
+            return output_path, word_times
+        except Exception as exc:
+            last_exc = exc
+            if attempt < 1:
+                logger.warning(
+                    "TTS+timestamps attempt %d failed: %s — retrying in 3s", attempt + 1, exc
+                )
+                _time.sleep(3)
+
+    logger.error(
+        "Timestamps failed after 2 attempts (%s) — falling back to basic TTS. "
+        "Word-synced captions will NOT be available for this render.",
+        last_exc,
+    )
+    path = generate(script, output_path=output_path, voice_id=voice_id)
+    return path, []

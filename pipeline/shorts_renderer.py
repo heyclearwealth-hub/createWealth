@@ -37,7 +37,7 @@ SHORT_H = 1920
 WPS = 2.5               # words per second at voiceover pace
 MAX_VISUAL_GAP_S = 2.0  # max seconds of blank screen before injecting a cadence label
 MAX_LINE_CHARS = 20     # fallback char-wrap width (word-boundary fallback only)
-TARGET_LOUDNESS = -16.0
+TARGET_LOUDNESS = -14.0  # YouTube Shorts normalises to -14 dB LUFS on mobile
 BG_FRAME_FPS = 6.0      # background frame extraction rate (higher = smoother motion)
 BG_CADENCE_S = 0.5      # background refresh cadence for segment generation
 BG_MIN_CUT_S = 1.5
@@ -51,6 +51,7 @@ CAPTION_WINDOW_WORDS = 7
 MAX_CONCURRENT_LABELS = 1
 LABEL_MIN_GAP_S = 0.35
 CTA_SAFE_TAIL_S = 3.0
+MAX_CADENCE_LABELS = 8   # cap on auto-injected cadence labels — more causes cognitive overload
 MIX_TRUE_PEAK_TARGET = -3.0
 
 GENERIC_LABEL_TEXTS = {
@@ -1014,17 +1015,17 @@ def _inject_proof_tags(
         if cite_idx >= len(stat_citations):
             break
         if ov.get("type") in {"hook_number", "comparison"}:
-            # Center the proof tag in the middle of the overlay window so it's
-            # visible for the full tag duration even on short overlays.
             ov_mid = (_ov_start(ov) + _ov_end(ov)) / 2
             proof_start = round(max(_ov_start(ov) + 0.2, ov_mid - 0.8), 3)
-            if proof_start < duration_s - 1.5:
+            # Clamp duration so proof tag never overruns the video end.
+            proof_dur = round(min(1.6, max(0.1, duration_s - proof_start)), 3)
+            if proof_start < duration_s - 0.2:
                 result.append({
                     "type": "proof_tag",
                     "text": stat_citations[cite_idx],
                     "start_time_s": proof_start,
                     "start_word": ov.get("start_word", 0),
-                    "duration_s": 1.6,
+                    "duration_s": proof_dur,
                 })
                 cite_idx += 1
     return result
@@ -1079,7 +1080,7 @@ def _sanitize_overlays(
         if start_time_s >= duration_s:
             continue
         # Clamp so overlay always ends before the video finishes.
-        dur = min(dur, max(0.5, round(duration_s - start_time_s - 0.05, 2)))
+        dur = min(dur, max(0.1, round(duration_s - start_time_s - 0.05, 2)))
         cleaned = dict(ov)
         cleaned["type"] = kind
         cleaned["start_word"] = start_word
@@ -1152,6 +1153,9 @@ def _inject_cadence_labels(overlays: list, vo_duration: float, pillar: str = "")
     label_idx = 0
 
     for _ in range(200):   # hard cap — prevents infinite loops on degenerate input
+        if label_idx >= MAX_CADENCE_LABELS:
+            break
+
         # Rebuild bounds from current injected list each iteration
         bounds: set[float] = {0.0, vo_duration}
         for ov in injected:
@@ -1180,6 +1184,12 @@ def _inject_cadence_labels(overlays: list, vo_duration: float, pillar: str = "")
 
         if filled:
             break
+    else:
+        logger.warning(
+            "cadence label injection hit 200-iteration cap — "
+            "some visual gaps > %.1fs may remain unfilled",
+            MAX_VISUAL_GAP_S,
+        )
 
     return injected
 
@@ -1225,7 +1235,7 @@ def _quality_gate(output_path: Path, expected_duration: float) -> None:
     if str(video.get("pix_fmt", "")) != "yuv420p":
         raise RuntimeError(f"Wrong pixel format: {video.get('pix_fmt')}")
     duration = float(probe.get("format", {}).get("duration", 0.0) or 0.0)
-    if abs(duration - expected_duration) > 3.0:
+    if abs(duration - expected_duration) > 1.5:
         raise RuntimeError(f"Duration drift: rendered {duration:.1f}s vs voiceover {expected_duration:.1f}s")
     mean_db, max_db = _mean_volume_db(output_path)
     # Both checks are warnings — loudnorm can undershoot 2–4 dB on short clips
@@ -1377,10 +1387,11 @@ def render(
         for ov in overlays
     )
     if has_financial_claim:
-        # Place disclaimer before the CTA window starts so they never co-render.
-        # CTA fires at roughly vo_duration - CTA_SAFE_TAIL_S; we end the disclaimer
-        # 0.3s before that so there's a clean visual gap.
-        cta_start_approx = max(0.0, vo_duration - CTA_SAFE_TAIL_S)
+        # Place disclaimer before the actual CTA start so they never co-render.
+        # Use the real CTA start from the overlay list (not an estimate) so that
+        # early-placed CTAs don't cause the disclaimer to overlap them.
+        cta_starts = [_ov_start(ov) for ov in overlays if ov.get("type") == "cta"]
+        cta_start_approx = min(cta_starts) if cta_starts else max(0.0, vo_duration - CTA_SAFE_TAIL_S)
         disclaimer_end_target = cta_start_approx - 0.3
         disclaimer_dur = 2.0
         disclaimer_start = max(0.0, round(disclaimer_end_target - disclaimer_dur, 2))
