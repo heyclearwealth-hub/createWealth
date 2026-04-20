@@ -13,6 +13,8 @@ Optimizer updates:
   data/topic_weights.json  — pillar weights for trends.py
   data/video_performance.json  — composite_score per video
 """
+from __future__ import annotations
+
 import json
 import logging
 import os

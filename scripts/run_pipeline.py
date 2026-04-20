@@ -35,6 +35,13 @@ WORKSPACE = Path("workspace")
 DRY_RUN = os.environ.get("DRY_RUN", "0") == "1"
 
 
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _parse_hook_threshold() -> float:
     raw = os.environ.get("HOOK_SCORE_THRESHOLD", "0.75")
     try:
@@ -49,19 +56,20 @@ MAX_STARTUP_DELAY_SECONDS = max(
     0,
     int(os.environ.get("MAX_STARTUP_DELAY_SECONDS", "900") or "900"),
 )
+PIPELINE_DATA_SYNC_STRICT = _env_flag("PIPELINE_DATA_SYNC_STRICT", True)
 
 
-def _sync_data_branch() -> None:
-    """Push data/ directory changes to pipeline-data branch (best-effort)."""
+def _sync_data_branch() -> bool:
+    """Push data/ directory changes to pipeline-data branch. Returns success status."""
     data_dir = Path("data")
     if not data_dir.exists():
         logger.info("No data directory found; skipping data branch sync")
-        return
+        return True
 
     files_to_sync = [p for p in data_dir.rglob("*") if p.is_file()]
     if not files_to_sync:
         logger.info("No data files found to sync")
-        return
+        return True
 
     try:
         subprocess.run(["git", "fetch", "origin", "pipeline-data"], check=False, capture_output=True, text=True)
@@ -129,8 +137,10 @@ def _sync_data_branch() -> None:
                     capture_output=True,
                     text=True,
                 )
+        return True
     except subprocess.CalledProcessError as exc:
-        logger.warning("Data branch sync failed (non-fatal): %s", exc)
+        logger.warning("Data branch sync failed: %s", exc)
+        return False
 
 
 def main() -> None:
@@ -209,7 +219,20 @@ def main() -> None:
 
     # Step 11: Mark topic used + sync
     mark_topic_used(topic["slug"])
-    _sync_data_branch()
+    sync_ok = _sync_data_branch()
+    if not sync_ok:
+        if DRY_RUN or not PIPELINE_DATA_SYNC_STRICT:
+            logger.warning(
+                "Data branch sync failed but continuing "
+                "(DRY_RUN=%s, PIPELINE_DATA_SYNC_STRICT=%s)",
+                DRY_RUN,
+                PIPELINE_DATA_SYNC_STRICT,
+            )
+        else:
+            raise RuntimeError(
+                "Data branch sync failed and strict mode is enabled. "
+                "Set PIPELINE_DATA_SYNC_STRICT=0 only if you explicitly want best-effort mode."
+            )
 
     logger.info("Pipeline complete. Awaiting human review.")
 

@@ -155,3 +155,38 @@ def test_uses_video_entry_packaging_candidates(tmp_path, monkeypatch):
     update_call = mock_yt.videos().update.call_args
     body = update_call.kwargs["body"] if update_call.kwargs else update_call[1]["body"]
     assert body["snippet"]["title"] == "Entry Title B"
+
+
+def test_rotates_thumbnail_when_variant_available(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "data").mkdir()
+    monkeypatch.setattr(ab, "SLA_HOURS", 1)
+
+    perf = _make_perf("vid-thumb", upload_offset_hours=5, native_test_started=False, variant_index=0)
+    perf["videos"][0]["packaging_candidates"] = {
+        "titles": ["Title A", "Title B"],
+        "thumbnail_texts": ["THUMB A", "THUMB B"],
+    }
+    perf_path = tmp_path / "data" / "video_performance.json"
+    perf_path.write_text(json.dumps(perf))
+
+    thumb_file = tmp_path / "thumb_b.png"
+    thumb_file.write_bytes(b"x")
+
+    mock_yt = MagicMock()
+    mock_yt.videos().list().execute.return_value = {
+        "items": [{"snippet": {"title": "Title A", "description": ""}}]
+    }
+    mock_yt.videos().update().execute.return_value = {}
+    mock_yt.thumbnails().set().execute.return_value = {}
+
+    with patch("pipeline.ab_orchestrator._youtube_service", return_value=mock_yt):
+        with patch("pipeline.ab_orchestrator._resolve_thumbnail_for_variant", return_value=thumb_file):
+            with patch("pipeline.ab_orchestrator.quota_guard.assert_budget"):
+                with patch("pipeline.ab_orchestrator.quota_guard.charge"):
+                    ab.check_and_rotate("vid-thumb")
+
+    thumb_set_calls = mock_yt.thumbnails().set.call_args_list
+    assert any(call.kwargs.get("videoId") == "vid-thumb" for call in thumb_set_calls)
+    updated = json.loads(perf_path.read_text())
+    assert updated["videos"][0]["current_thumbnail_variant_index"] == 1

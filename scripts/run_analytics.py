@@ -21,6 +21,18 @@ logger = logging.getLogger(__name__)
 PERFORMANCE_FILE = Path("data/video_performance.json")
 
 
+def _unique_trackable_video_ids(perf: dict) -> list[str]:
+    ids: list[str] = []
+    seen: set[str] = set()
+    for entry in perf.get("videos", []):
+        video_id = str(entry.get("video_id", "") or "").strip()
+        if not video_id or video_id == "dry-run" or video_id in seen:
+            continue
+        seen.add(video_id)
+        ids.append(video_id)
+    return ids
+
+
 def main() -> None:
     from pipeline import quota_guard
 
@@ -49,13 +61,11 @@ def main() -> None:
     with PERFORMANCE_FILE.open() as f:
         perf = json.load(f)
 
-    for entry in perf.get("videos", []):
-        video_id = entry.get("video_id")
-        if video_id and video_id != "dry-run":
-            try:
-                check_and_rotate(video_id)
-            except Exception as exc:
-                logger.warning("A/B rotation failed for %s: %s", video_id, exc)
+    for video_id in _unique_trackable_video_ids(perf):
+        try:
+            check_and_rotate(video_id)
+        except Exception as exc:
+            logger.warning("A/B rotation failed for %s: %s", video_id, exc)
 
     logger.info("Analytics and optimize run complete")
 

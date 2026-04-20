@@ -4,6 +4,8 @@ run_shorts.py — Entrypoint for Workflow 3 (shorts-from-approved).
 Finds the latest eligible long-form video, creates a Short, uploads it,
 and links the resulting short back to the long-video entry.
 """
+from __future__ import annotations
+
 import json
 import logging
 import os

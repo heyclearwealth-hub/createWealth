@@ -1,5 +1,6 @@
 """Unit tests for scripts/run_pipeline.py."""
 import importlib
+import subprocess
 import pytest
 from unittest.mock import patch
 
@@ -46,3 +47,18 @@ def test_run_pipeline_falls_back_on_invalid_hook_threshold(tmp_path, monkeypatch
 
     assert mock_gate.call_count == 1
     assert mock_gate.call_args.kwargs["threshold"] == 0.75
+
+
+def test_sync_data_branch_returns_false_on_git_error(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "topics_used.json").write_text('{"topics":[]}')
+
+    import scripts.run_pipeline as rp
+    rp = importlib.reload(rp)
+
+    def fake_run(*args, **kwargs):
+        raise subprocess.CalledProcessError(1, args[0])
+
+    monkeypatch.setattr(rp.subprocess, "run", fake_run)
+    assert rp._sync_data_branch() is False

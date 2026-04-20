@@ -85,6 +85,24 @@ def test_caption_slice_does_not_cross_sentence_boundary():
 
 
 def test_plain_text_proof_tag_is_centered_banner():
-    overlay = {"type": "proof_tag", "text": "Educational only. Not advice.", "plain_text": True}
+    overlay = {"type": "proof_tag", "text": "Educational only. Not financial advice.", "plain_text": True}
     img = sr._make_overlay_image(overlay)
     assert img.getbbox() is not None
+
+
+def test_needs_financial_disclaimer_true_for_finance_pillar_without_symbols():
+    overlays = [{"type": "label", "text": "Start with broad-market funds"}]
+    script_data = {
+        "pillar": "investing",
+        "voiceover_script": "Build a simple plan and stay consistent.",
+    }
+    assert sr._needs_financial_disclaimer(overlays, script_data) is True
+
+
+def test_needs_financial_disclaimer_false_for_non_finance_copy():
+    overlays = [{"type": "label", "text": "Sunrise over mountain lake"}]
+    script_data = {
+        "pillar": "travel",
+        "voiceover_script": "Pack light and enjoy the trail.",
+    }
+    assert sr._needs_financial_disclaimer(overlays, script_data) is False

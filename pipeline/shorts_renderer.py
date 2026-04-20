@@ -82,6 +82,16 @@ LABEL_ACCENT_COLORS = [
     (255, 255, 255, 255),  # neutral white
 ]
 
+FINANCE_PILLARS = {"investing", "budgeting", "debt", "tax", "career_income"}
+FINANCIAL_SIGNAL_RE = re.compile(
+    r"\$|%|\b(invest|investing|portfolio|stocks?|etf|crypto|retire(?:ment)?|debt|budget|tax|income|salary|interest)\b",
+    re.IGNORECASE,
+)
+ADVICE_SIGNAL_RE = re.compile(
+    r"\b(you should|do this|avoid this|buy|sell|max out|open (?:a|an)|start now)\b",
+    re.IGNORECASE,
+)
+
 # Import pillar gradients from thumbnail_gen to keep a single source of truth.
 # New pillars added there will automatically apply here too.
 try:
@@ -393,6 +403,29 @@ def _make_background_image(pillar: str = "investing"):
     )
     draw.text((wm_x, wm_y), wm_text, font=font, fill=(255, 255, 255, 180))
     return bg
+
+
+def _build_background_frame(t_s: float, bg_img, bg_frame):
+    """
+    Backward-compatible helper used by tests.
+    Produces a subtle animated pan on the gradient fallback so static frames
+    don't look frozen when real video background is unavailable.
+    """
+    from PIL import Image
+
+    if bg_frame is not None:
+        return bg_frame.convert("RGBA").resize((SHORT_W, SHORT_H), Image.Resampling.BILINEAR)
+
+    scale = 1.08
+    src = bg_img.convert("RGBA").resize(
+        (int(SHORT_W * scale), int(SHORT_H * scale)),
+        Image.Resampling.BILINEAR,
+    )
+    max_x = max(0, src.width - SHORT_W)
+    max_y = max(0, src.height - SHORT_H)
+    x = int(max_x * ((math.sin(t_s * 0.63) + 1.0) / 2.0))
+    y = int(max_y * ((math.cos(t_s * 0.47) + 1.0) / 2.0))
+    return src.crop((x, y, x + SHORT_W, y + SHORT_H))
 
 
 # ---------------------------------------------------------------------------
@@ -831,7 +864,7 @@ def _make_overlay_image(overlay: dict, w: int = SHORT_W, h: int = SHORT_H, label
         lines, font = _wrap_fit_lines(draw, text, max_width=int(w * 0.80), start_size=58, min_size=32, max_lines=2)
         block_h = sum(_text_height(draw, ln, font) for ln in lines) + 8 * max(0, len(lines) - 1)
         pad = 24
-        y0 = int(h * 0.72)
+        y0 = int(h * 0.66)
         card_w = int(w * 0.84)
         x0 = (w - card_w) // 2
         draw.rounded_rectangle(
@@ -928,6 +961,37 @@ def _check_label_overlaps(overlays: list[dict]) -> list[str]:
                     f"↔ '{ov_b.get('text')}' ({s_b:.1f}–{e_b:.1f}s)"
                 )
     return warnings
+
+
+def _has_existing_finance_disclaimer(overlays: list[dict]) -> bool:
+    for ov in overlays:
+        if ov.get("type") != "proof_tag":
+            continue
+        text = _clean_text(ov.get("text", "")).lower()
+        if "not advice" in text or "not financial advice" in text:
+            return True
+    return False
+
+
+def _needs_financial_disclaimer(overlays: list[dict], script_data: dict) -> bool:
+    pillar = _clean_text(script_data.get("pillar", "")).lower()
+    if pillar in FINANCE_PILLARS:
+        return True
+
+    corpus_parts: list[str] = []
+    for ov in overlays:
+        corpus_parts.extend([
+            _clean_text(ov.get("text", "")),
+            _clean_text(ov.get("left", "")),
+            _clean_text(ov.get("right", "")),
+            _clean_text(ov.get("subtitle", "")),
+        ])
+    corpus_parts.extend([
+        _clean_text(script_data.get("voiceover_script", "")),
+        _clean_text(script_data.get("description", "")),
+    ])
+    corpus = " ".join(p for p in corpus_parts if p)
+    return bool(FINANCIAL_SIGNAL_RE.search(corpus) or ADVICE_SIGNAL_RE.search(corpus))
 
 
 def _sanitize_overlays(
@@ -1264,14 +1328,11 @@ def render(
     stat_citations = script_data.get("stat_citations") or []
     overlays = _inject_proof_tags(overlays, stat_citations, vo_duration)
 
-    # Step 3b: inject on-screen "Educational only. Not financial advice." disclaimer
-    # if any overlay contains a dollar amount or percentage — required for finance content.
-    has_financial_claim = any(
-        "$" in str(ov.get("text", "")) or "%" in str(ov.get("text", ""))
-        or "$" in str(ov.get("left", "")) or "$" in str(ov.get("right", ""))
-        for ov in overlays
-    )
-    if has_financial_claim:
+    # Step 3b: inject on-screen "Educational only. Not financial advice." disclaimer.
+    # Use a robust finance-signal check (not only '$' or '%') so advisory claims
+    # without explicit symbols still get a disclosure card.
+    has_financial_claim = _needs_financial_disclaimer(overlays, script_data)
+    if has_financial_claim and not _has_existing_finance_disclaimer(overlays):
         # Place disclaimer before the actual CTA start so they never co-render.
         # Use the real CTA start from the overlay list (not an estimate) so that
         # early-placed CTAs don't cause the disclaimer to overlap them.
@@ -1282,7 +1343,7 @@ def render(
         disclaimer_start = max(0.0, round(disclaimer_end_target - disclaimer_dur, 2))
         overlays.append({
             "type": "proof_tag",
-            "text": "Educational only. Not advice.",
+            "text": "Educational only. Not financial advice.",
             "plain_text": True,
             "start_time_s": disclaimer_start,
             "duration_s": disclaimer_dur,

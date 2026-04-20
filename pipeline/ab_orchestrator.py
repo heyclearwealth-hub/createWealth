@@ -3,6 +3,8 @@ ab_orchestrator.py — Manages title/thumbnail A/B experiments.
 Mode: native_preferred — tries YouTube Studio native test first,
 falls back to API metadata rotation if native test not started within SLA.
 """
+from __future__ import annotations
+
 import json
 import logging
 import os
@@ -11,6 +13,7 @@ from pathlib import Path
 
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
 
 from pipeline import quota_guard
 
@@ -84,11 +87,53 @@ def _safe_float(value, default=0.0) -> float:
         return default
 
 
+def _thumbnail_variants_for_video(video_entry: dict) -> list[str]:
+    packaging = video_entry.get("packaging_candidates")
+    if not isinstance(packaging, dict):
+        return []
+
+    variants = packaging.get("thumbnail_texts", [])
+    if not isinstance(variants, list):
+        return []
+
+    cleaned = [" ".join(str(v or "").split()).strip() for v in variants]
+    cleaned = [v for v in cleaned if v]
+    if len(cleaned) < 2:
+        return []
+    return cleaned
+
+
+def _resolve_thumbnail_for_variant(video_entry: dict, variant_index: int) -> Path | None:
+    variants = _thumbnail_variants_for_video(video_entry)
+    if not variants or variant_index < 0:
+        return None
+
+    try:
+        from pipeline.thumbnail_gen import generate_thumbnails
+    except Exception as exc:
+        logger.warning("thumbnail_gen unavailable for A/B rotation: %s", exc)
+        return None
+
+    try:
+        generated = generate_thumbnails(variants, pillar=str(video_entry.get("pillar", "") or ""))
+    except Exception as exc:
+        logger.warning("Thumbnail generation failed during A/B rotation: %s", exc)
+        return None
+
+    if variant_index >= len(generated):
+        return None
+
+    path = Path(generated[variant_index])
+    if not path.exists():
+        return None
+    return path
+
+
 def check_and_rotate(video_id: str) -> None:
     """
     For a published video:
     1. If native test was set up and within SLA — do nothing (let YouTube run it).
-    2. If SLA exceeded and no native test started — rotate to next title candidate via API.
+    2. If SLA exceeded and no native test started — rotate to next metadata variant via API.
     3. Log result to video_performance.json.
     """
     if MODE == "disabled":
@@ -245,6 +290,23 @@ def check_and_rotate(video_id: str) -> None:
         quota_guard.charge("videos.update")
 
         logger.info("Title updated for %s → variant %d", video_id, next_variant)
+
+        thumbnail_path = _resolve_thumbnail_for_variant(video_entry, next_variant)
+        if thumbnail_path:
+            try:
+                quota_guard.assert_budget("thumbnails.set")
+                yt.thumbnails().set(
+                    videoId=video_id,
+                    media_body=MediaFileUpload(str(thumbnail_path), mimetype="image/png"),
+                ).execute()
+                quota_guard.charge("thumbnails.set")
+                video_entry["current_thumbnail_variant_index"] = next_variant
+                video_entry["thumbnail_path"] = str(thumbnail_path)
+                logger.info("Thumbnail updated for %s → variant %d", video_id, next_variant)
+            except Exception as exc:
+                logger.warning("Thumbnail rotation failed for %s: %s", video_id, exc)
+        else:
+            logger.info("No thumbnail variants available for %s; rotated title only", video_id)
 
         video_entry["current_variant_index"] = next_variant
         video_entry["last_rotated"] = datetime.now(timezone.utc).isoformat()

@@ -10,6 +10,7 @@ Features:
 import json
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -30,6 +31,110 @@ AI_DISCLOSURE_FOOTER = (
     "\n\n⚠️ This video uses AI-generated voiceover and AI-assisted script writing.\n"
     "⚠️ This is for educational purposes only. Not financial advice."
 )
+
+FINANCE_SAFE_FALLBACK_TITLE = "Personal Finance: Practical Steps That Work"
+_RISKY_PACKAGING_PATTERNS = [
+    re.compile(r"\b(get rich quick|overnight wealth|overnight success)\b", re.IGNORECASE),
+    re.compile(r"\b(guarantee(?:d)?|risk[- ]?free|surefire)\b", re.IGNORECASE),
+    re.compile(r"\b(double|triple)\s+your\s+money\b", re.IGNORECASE),
+    re.compile(r"\b\d{2,}%\s*(?:daily|weekly|monthly|return|profit)\b", re.IGNORECASE),
+    re.compile(r"\byou\s+will\s+(?:make|earn)\b", re.IGNORECASE),
+]
+_UPLOAD_TITLE_BLOCK_PATTERNS = [
+    re.compile(r"\bguarantee(?:d)?\b", re.IGNORECASE),
+    re.compile(r"\brisk[- ]?free\b", re.IGNORECASE),
+    re.compile(r"\bget\s+rich(?:\s+quick)?\b", re.IGNORECASE),
+    re.compile(r"\bmake\s*\$?\s*\d[\d,]*(?:\.\d+)?\s*(?:/|per)?\s*(?:a\s+)?(?:day|daily)\b", re.IGNORECASE),
+]
+
+
+def _clean_text(value) -> str:
+    return " ".join(str(value or "").split()).strip()
+
+
+def _is_risky_packaging_text(text: str) -> bool:
+    candidate = _clean_text(text)
+    if not candidate:
+        return False
+    return any(pattern.search(candidate) for pattern in _RISKY_PACKAGING_PATTERNS)
+
+
+def _sanitize_title_candidates(raw_titles: list, fallback_title: str) -> list[str]:
+    seen: set[str] = set()
+    safe_titles: list[str] = []
+    for raw in raw_titles or []:
+        title = _clean_text(raw)
+        if not title:
+            continue
+        if _is_risky_packaging_text(title):
+            logger.warning("Dropping risky title candidate: '%s'", title[:80])
+            continue
+        if len(title) > 100:
+            logger.warning("Title candidate truncated to 100 chars: '%s'", title[:80])
+            title = title[:100].rstrip()
+        key = title.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        safe_titles.append(title)
+
+    if safe_titles:
+        return safe_titles
+
+    fallback = _clean_text(fallback_title) or FINANCE_SAFE_FALLBACK_TITLE
+    if _is_risky_packaging_text(fallback):
+        logger.warning("Fallback title was risky. Using neutral fallback title instead.")
+        fallback = FINANCE_SAFE_FALLBACK_TITLE
+    return [fallback[:100]]
+
+
+def _sanitize_thumbnail_texts(raw_values) -> list[str]:
+    values = raw_values if isinstance(raw_values, list) else []
+    seen: set[str] = set()
+    safe: list[str] = []
+    for raw in values:
+        text = _clean_text(raw)
+        if not text:
+            continue
+        if _is_risky_packaging_text(text):
+            logger.warning("Dropping risky thumbnail text candidate: '%s'", text[:80])
+            continue
+        if len(text) > 40:
+            text = text[:40].rstrip()
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        safe.append(text)
+    return safe
+
+
+def _sanitize_description_hook(raw_hook) -> str:
+    hook = _clean_text(raw_hook)
+    if not hook:
+        return ""
+    if _is_risky_packaging_text(hook):
+        logger.warning("Dropping risky description hook.")
+        return ""
+    if len(hook) > 350:
+        logger.warning("Description hook truncated to 350 chars")
+        hook = hook[:350].rstrip()
+    return hook
+
+
+def _is_blocked_upload_title(title: str) -> bool:
+    text = _clean_text(title)
+    if not text:
+        return True
+    return any(pattern.search(text) for pattern in _UPLOAD_TITLE_BLOCK_PATTERNS)
+
+
+def _assert_upload_title_safe(title: str) -> None:
+    if _is_blocked_upload_title(title):
+        raise ValueError(
+            "Upload blocked by title safety gate. "
+            "Title contains a restricted monetization-risk pattern."
+        )
 
 
 def _youtube_service():
@@ -70,12 +175,10 @@ def _load_series_map() -> dict:
 def _normalize_candidates(raw: dict, fallback_title: str) -> tuple[dict, list[str], int]:
     candidates = raw if isinstance(raw, dict) else {}
     titles = candidates.get("titles", [fallback_title])
-    if not isinstance(titles, list) or not titles:
+    if not isinstance(titles, list):
         titles = [fallback_title]
 
-    cleaned_titles = [str(t) for t in titles if t]
-    if not cleaned_titles:
-        cleaned_titles = [fallback_title]
+    cleaned_titles = _sanitize_title_candidates(titles, fallback_title)
 
     try:
         default_idx = int(candidates.get("default_index", 0) or 0)
@@ -88,8 +191,8 @@ def _normalize_candidates(raw: dict, fallback_title: str) -> tuple[dict, list[st
     normalized = {
         "default_index": default_idx,
         "titles": cleaned_titles,
-        "thumbnail_texts": candidates.get("thumbnail_texts", []),
-        "description_hook": str(candidates.get("description_hook", "") or ""),
+        "thumbnail_texts": _sanitize_thumbnail_texts(candidates.get("thumbnail_texts", [])),
+        "description_hook": _sanitize_description_hook(candidates.get("description_hook", "")),
     }
     return normalized, cleaned_titles, default_idx
 
@@ -201,6 +304,7 @@ def upload(pipeline_json: dict, video_path: Path = OUTPUT_PATH) -> str:
         return "dry-run"
 
     # Real upload
+    _assert_upload_title_safe(title)
     quota_guard.assert_budget("videos.insert")
 
     yt = _youtube_service()
@@ -283,6 +387,11 @@ def _record_upload(
     default_variant_index: int,
 ) -> None:
     perf = _load_performance()
+    existing = perf.get("videos", [])
+    deduped = [v for v in existing if v.get("video_id") != video_id]
+    if len(deduped) != len(existing):
+        logger.warning("Replacing existing performance entry for video_id=%s", video_id)
+
     content_type = _normalize_content_type(os.environ.get("SOURCE_CONTENT_TYPE", "long"))
     source_run_id = str(os.environ.get("SOURCE_RUN_ID", "") or "").strip()
     parent_video_id = str(os.environ.get("PARENT_VIDEO_ID", "") or "").strip()
@@ -298,10 +407,13 @@ def _record_upload(
         "parent_video_id": parent_video_id,
         "native_test_started": False,
         "current_variant_index": default_variant_index,
+        "current_thumbnail_variant_index": default_variant_index,
+        "thumbnail_path": str(pipeline_json.get("thumbnail_path", "") or "").strip(),
         "packaging_candidates": candidates,
         "metrics_24h": {},
         "metrics_48h": {},
     }
-    perf["videos"].append(entry)
+    deduped.append(entry)
+    perf["videos"] = deduped
     _save_performance(perf)
     logger.info("Recorded upload entry for %s", video_id)
