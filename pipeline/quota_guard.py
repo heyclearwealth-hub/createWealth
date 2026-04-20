@@ -11,6 +11,8 @@ Unit costs (approximate):
   channels.list                       ~1
   playlistItems.insert               ~50
   search.list                       ~100
+  thumbnails.set                      ~50
+  commentThreads.insert               ~50
   youtubeAnalytics.reports.query      ~1
 """
 from __future__ import annotations
@@ -35,6 +37,7 @@ UNIT_COSTS = {
     "playlistItems.insert": 50,
     "search.list": 100,
     "thumbnails.set": 50,
+    "commentThreads.insert": 50,
     "youtubeAnalytics.reports.query": 1,
 }
 

@@ -32,6 +32,17 @@ AI_DISCLOSURE_FOOTER = (
     "⚠️ This is for educational purposes only. Not financial advice."
 )
 
+# Pinned comment templates — "drop your number" style seeds specific replies that
+# signal high engagement quality to the algorithm (vs generic "great video!" spam).
+PILLAR_PINNED_COMMENTS = {
+    "investing": "Drop your monthly invest amount below 👇 Even $10/month counts. Also: reply A if you DCA, B if you time the market — I'll pin the top reply.",
+    "budgeting": "What's your biggest budget win this month? Drop it below 👇 Reply A if you save first, B if you spend then budget — let's see which camp wins.",
+    "debt": "Drop your debt payoff goal below 👇 Even writing it down makes it real. Reply A for avalanche method, B for snowball — which are you?",
+    "tax": "Did this save you money? Comment TAX below 👇 Reply A if you're Team Roth, B if you're Team Traditional — I'll pin the best reply.",
+    "career_income": "Drop your raise goal below 👇 Reply A if you job-hop for income growth, B if you stay put — let's see the split.",
+}
+_DEFAULT_PINNED_COMMENT = "Did this help? Drop your biggest money goal below 👇 Let's keep each other accountable."
+
 FINANCE_SAFE_FALLBACK_TITLE = "Personal Finance: Practical Steps That Work"
 _RISKY_PACKAGING_PATTERNS = [
     re.compile(r"\b(get rich quick|overnight wealth|overnight success)\b", re.IGNORECASE),
@@ -384,8 +395,32 @@ def upload(pipeline_json: dict, video_path: Path = OUTPUT_PATH) -> str:
     elif thumbnail_path:
         logger.warning("Thumbnail path provided but file not found: %s", thumbnail_path)
 
+    _post_pinned_comment(yt, video_id, pillar)
+
     _record_upload(video_id, pipeline_json, title, candidates, default_idx)
     return video_id
+
+
+def _post_pinned_comment(yt, video_id: str, pillar: str) -> None:
+    text = PILLAR_PINNED_COMMENTS.get(pillar, _DEFAULT_PINNED_COMMENT)
+    try:
+        quota_guard.assert_budget("commentThreads.insert")
+        response = yt.commentThreads().insert(
+            part="snippet",
+            body={
+                "snippet": {
+                    "videoId": video_id,
+                    "topLevelComment": {
+                        "snippet": {"textOriginal": text}
+                    },
+                }
+            },
+        ).execute()
+        quota_guard.charge("commentThreads.insert")
+        comment_id = response["snippet"]["topLevelComment"]["id"]
+        logger.info("Pinned comment posted for video %s: %s", video_id, comment_id)
+    except Exception as exc:
+        logger.error("Pinned comment failed for video %s: %s", video_id, exc)
 
 
 def _record_upload(

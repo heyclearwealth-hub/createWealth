@@ -34,6 +34,8 @@ MAX_WORDS = 103
 MIN_OVERLAYS = 6
 MAX_OVERLAYS = 12
 MAX_TEXT_CHARS = 34
+COMPARISON_TEXT_CHARS = 30
+CTA_TEXT_CHARS = 46
 MIN_TITLE_OPTIONS = 5
 MAX_TITLE_OPTIONS = 10
 
@@ -58,23 +60,33 @@ TITLE_POWER_TERMS_FINANCE = {
     "tax", "debt", "retire", "income", "earn", "invest", "raise", "salary",
 }
 
-OVERLAY_TYPES = {"hook_number", "label", "comparison", "cta"}
+OVERLAY_TYPES = {"hook_number", "label", "comparison", "cta", "timeline"}
+GENERIC_LABEL_TEXTS = {
+    "REAL EXAMPLE",
+    "SIMPLE MATH",
+    "THIS IS KEY",
+    "TIME MATTERS",
+    "START SMALL",
+    "STAY CONSISTENT",
+}
 
-# Pillar-specific CTA copy — specific CTAs convert better than generic "money tips"
+# Pillar-specific CTA copy — "drop your number" style drives specific comments,
+# which signals higher engagement quality to the algorithm than generic replies.
 PILLAR_CTA_TEXT = {
-    "investing": "Save this and follow for investing playbooks",
-    "budgeting": "Save this and follow for money-saving systems",
-    "debt": "Save this and follow for debt payoff steps",
-    "tax": "Save this and follow for tax setup tactics",
-    "career_income": "Save this and follow for income growth moves",
+    "investing": "Drop your monthly invest amount below. Follow.",
+    "budgeting": "Comment your biggest budget win. Follow.",
+    "debt": "Drop your debt payoff goal below. Follow.",
+    "tax": "Comment TAX if this saved you money. Follow.",
+    "career_income": "Drop your raise goal below. Follow.",
 }
 DEFAULT_DURATIONS = {
     "hook_number": 4.0,
     "label": 2.2,
     "comparison": 2.8,
+    "timeline": 3.5,
     "cta": 3.6,
 }
-MIN_COMPARISON_TABLES = 2
+MIN_COMPARISON_TABLES = 4
 
 FINANCE_TOPICS = [
     {"topic": "compound interest", "pillar": "investing", "angle": "small monthly amount becomes huge over time"},
@@ -334,15 +346,25 @@ def _extract_first_number(script: str) -> str:
     return match.group(0) if match else "$100"
 
 
-def _normalize_text(value: str, fallback: str) -> str:
+def _normalize_text(
+    value: str,
+    fallback: str,
+    max_chars: int = MAX_TEXT_CHARS,
+    allow_ellipsis: bool = True,
+) -> str:
     text = " ".join(str(value or "").split()).strip()
     if not text:
         text = fallback
     for pattern, replacement in _ACRONYM_PATTERNS:
         text = pattern.sub(replacement, text)
     text = re.sub(r"\s+([,.!?])", r"\1", text)
-    if len(text) > MAX_TEXT_CHARS:
-        text = text[: MAX_TEXT_CHARS - 3].rsplit(" ", 1)[0].rstrip() + "..."
+    if len(text) > max_chars:
+        if allow_ellipsis and max_chars > 3:
+            text = text[: max_chars - 3].rsplit(" ", 1)[0].rstrip() + "..."
+        else:
+            text = text[:max_chars].rsplit(" ", 1)[0].rstrip()
+            if not text:
+                text = fallback[:max_chars].strip()
     return text
 
 
@@ -358,6 +380,8 @@ def _polish_voiceover_script(script: str) -> str:
         text = pattern.sub(replacement, text)
     text = re.sub(r"\s+([,.!?])", r"\1", text)
     text = re.sub(r"\s*\[PAUSE\]\s*", " [PAUSE] ", text)
+    # Fix common grammar miss: "4.7% people" -> "4.7% of people".
+    text = re.sub(r"(\b\d+(?:\.\d+)?%)\s+people\b", r"\1 of people", text, flags=re.IGNORECASE)
     # Remove occasional filler lead-ins that create broken caption starts.
     text = re.sub(
         r"(^|[.!?]\s|\[PAUSE\]\s)(?:Know|Math|Now)\s+(?=(?:Here's|If|You|We|This|That)\b)",
@@ -365,6 +389,8 @@ def _polish_voiceover_script(script: str) -> str:
         text,
         flags=re.IGNORECASE,
     )
+    # Remove weak trailing filler endings from loop CTAs.
+    text = re.sub(r"(?:\s|^)(?:now\s+)?you know\.(?=\s|$)", " ", text, flags=re.IGNORECASE)
     # Normalize common money number spacing artifacts.
     text = re.sub(r"\$([0-9]{1,3})\s+([0-9]{3})(?!\d)", r"$\1,\2", text)
     text = re.sub(r"\s+", " ", text).strip()
@@ -423,6 +449,41 @@ def _comparison_table_pairs(numbers: list[str]) -> list[tuple[str, str]]:
     ]
 
 
+# "TEAM A vs TEAM B" poll labels — finance community debates that reliably seed
+# specific comments and drive the algorithm to show the video to commenters' followers.
+PILLAR_POLL_LABELS: dict[str, str] = {
+    "investing": "TEAM DCA OR LUMP SUM?",
+    "budgeting": "SAVE FIRST OR SPEND FIRST?",
+    "debt": "AVALANCHE OR SNOWBALL METHOD?",
+    "tax": "TEAM ROTH OR TRADITIONAL IRA?",
+    "career_income": "JOB HOP OR STAY PUT?",
+}
+
+
+def _poll_label(topic: dict) -> str:
+    pillar = str(topic.get("pillar", "")).lower()
+    return PILLAR_POLL_LABELS.get(pillar, "AGREE OR DISAGREE?")
+
+
+def _engagement_comment_label(topic: dict) -> str:
+    pillar = str(topic.get("pillar", "")).lower()
+    return {
+        "investing": "DROP YOUR AMOUNT BELOW",
+        "budgeting": "WHAT'S YOUR BUDGET WIN?",
+        "debt": "DROP YOUR PAYOFF GOAL BELOW",
+        "tax": "COMMENT TAX IF THIS HELPED",
+        "career_income": "DROP YOUR RAISE GOAL BELOW",
+    }.get(pillar, "COMMENT YOUR NUMBER BELOW")
+
+
+def _has_label(overlays: list[dict], token: str) -> bool:
+    token_up = token.upper()
+    return any(
+        ov.get("type") == "label" and token_up in str(ov.get("text", "")).upper()
+        for ov in overlays
+    )
+
+
 def _apply_engagement_blueprint(overlays: list[dict], script: str, topic: dict) -> list[dict]:
     """
     Deterministic engagement structure so every short has:
@@ -434,7 +495,37 @@ def _apply_engagement_blueprint(overlays: list[dict], script: str, topic: dict) 
     result = [dict(ov) for ov in overlays if isinstance(ov, dict)]
     compact_script = words < 30
 
-    # 1) Early "pick one" interaction prompt
+    # 0) "MYTH:" / "WRONG." hook interrupt — co-renders with the hook_number at word 0
+    #    for 1.2s to seed controversy curiosity before the stat lands. Fires alongside
+    #    the hook card (different vertical position), not instead of it.
+    if not any(
+        ov.get("type") == "label"
+        and any(kw in str(ov.get("text", "")).upper() for kw in ("MYTH", "WRONG"))
+        for ov in result
+    ):
+        pillar_val = str(topic.get("pillar", "")).lower()
+        myth_text = "MYTH:" if pillar_val in {"investing", "tax"} else "WRONG."
+        result.append({
+            "type": "label",
+            "text": myth_text,
+            "start_word": 0,
+            "duration_s": 1.2,
+        })
+
+    # 1) Early open-loop promise to reduce first-10s drop-off.
+    if (not compact_script) and (not _has_label(result, "STAY FOR")):
+        loop_pos = _find_next_free_start(result, int(words * 0.12), duration_s=1.8, max_words=words)
+        if loop_pos is not None:
+            result.append(
+                {
+                    "type": "label",
+                    "text": "STAY FOR THE FINAL STEP",
+                    "start_word": loop_pos,
+                    "duration_s": 1.8,
+                }
+            )
+
+    # 2) Early "pick one" interaction prompt
     if (not compact_script) and not any(ov.get("type") == "label" and "?" in str(ov.get("text", "")) for ov in result):
         prompt_pos = _find_next_free_start(result, int(words * 0.18), duration_s=1.8, max_words=words)
         if prompt_pos is not None:
@@ -447,7 +538,42 @@ def _apply_engagement_blueprint(overlays: list[dict], script: str, topic: dict) 
                 }
             )
 
-    # 2) Multiple before/after table beats (comparison overlays)
+    # 3) "TEAM A vs TEAM B" debate poll — seeds specific rival-comment threads
+    #    which the algorithm treats as higher-quality engagement than generic replies.
+    poll_text = _poll_label(topic)
+    if not any(
+        ov.get("type") == "label" and "OR" in str(ov.get("text", "")).upper()
+        for ov in result
+    ):
+        poll_pos = _find_next_free_start(result, int(words * 0.42), duration_s=2.0, max_words=words)
+        if poll_pos is not None:
+            result.append(
+                {
+                    "type": "label",
+                    "text": poll_text,
+                    "start_word": poll_pos,
+                    "duration_s": 2.0,
+                }
+            )
+
+    # 4) Mid-video comment trigger (boosts interaction).
+    comment_label = _engagement_comment_label(topic)
+    if not any(
+        ov.get("type") == "label" and "COMMENT" in str(ov.get("text", "")).upper()
+        for ov in result
+    ):
+        comment_pos = _find_next_free_start(result, int(words * 0.58), duration_s=1.6, max_words=words)
+        if comment_pos is not None:
+            result.append(
+                {
+                    "type": "label",
+                    "text": comment_label,
+                    "start_word": comment_pos,
+                    "duration_s": 1.6,
+                }
+            )
+
+    # 5) Multiple before/after table beats (comparison overlays)
     existing_comparisons = [ov for ov in result if ov.get("type") == "comparison"]
     needed = max(0, MIN_COMPARISON_TABLES - len(existing_comparisons))
     if needed:
@@ -492,7 +618,7 @@ def _apply_engagement_blueprint(overlays: list[dict], script: str, topic: dict) 
             )
             current_comparisons = [ov for ov in result if ov.get("type") == "comparison"]
 
-    # 3) Progress cadence labels
+    # 6) Progress cadence labels
     progress_labels = ["STEP 1/3", "STEP 2/3", "STEP 3/3"]
     progress_targets = [0.30, 0.52, 0.74]
     for text, ratio in zip(progress_labels, progress_targets):
@@ -511,6 +637,22 @@ def _apply_engagement_blueprint(overlays: list[dict], script: str, topic: dict) 
                 "duration_s": 1.4,
             }
         )
+
+    # 7) "SAVE THIS" label co-rendered with the timeline card.
+    #    Saves are one of YouTube's highest-weighted Shorts signals — an explicit
+    #    prompt drives 3–5× more saves than no prompt.
+    if not any(ov.get("type") == "label" and str(ov.get("text", "")).upper() == "SAVE THIS" for ov in result):
+        timeline_ovs = [ov for ov in result if ov.get("type") == "timeline"]
+        if timeline_ovs:
+            tov = timeline_ovs[0]
+            # Fire 2 words into the timeline card so the visual is fully loaded first.
+            save_word = min(int(tov.get("start_word", 0)) + 2, max(0, words - 1))
+            result.append({
+                "type": "label",
+                "text": "SAVE THIS",
+                "start_word": save_word,
+                "duration_s": 1.8,
+            })
 
     result.sort(key=lambda ov: int(ov.get("start_word", 0)))
     return result
@@ -644,12 +786,14 @@ def _loop_ending_line(script: str) -> str:
 
     if core_insight:
         short_core = " ".join(core_insight.split()[:5]).rstrip(".,!?")
-        seed = sum(ord(c) for c in short_core) % 4
+        seed = sum(ord(c) for c in short_core) % 6
         frames = [
             f"Most people hear '{short_core}' and do nothing. Be the exception.",
             f"If '{short_core}' surprised you, rewatch from the start.",
-            f"That's the piece most people skip. Now you know.",
+            f"That's the piece most people skip. Rewatch and lock it in.",
             f"'{short_core}' — that's the part that changes everything.",
+            f"Rewatch if you missed the '{short_core}' step. Next: the account that makes this 40% more powerful.",
+            f"'{short_core}' is step one. Follow — next video shows you step two.",
         ]
         return frames[seed]
     # Fallback: find a mid-script number (skip the first one, which is the hook).
@@ -883,7 +1027,12 @@ def _ensure_numeric_opening(script: str, topic: dict | None = None) -> str:
     topic_phrase = str((topic or {}).get("topic", "money rule")).strip().lower()
     topic_words = re.findall(r"[a-z0-9]+", topic_phrase)[:3]
     topic_stub = " ".join(topic_words) if topic_words else "money"
-    new_hook = f"{first_num} people ignore this {topic_stub} rule and lose money over years."
+    if first_num.endswith("%"):
+        new_hook = f"{first_num} of people ignore this {topic_stub} rule and lose money over years."
+    elif first_num.startswith("$"):
+        new_hook = f"{first_num} mistakes on this {topic_stub} rule can cost you over years."
+    else:
+        new_hook = f"{first_num} people ignore this {topic_stub} rule and lose money over years."
     remainder = " ".join(sentences[1:]).strip()
     return f"{new_hook} {remainder}".strip()
 
@@ -995,17 +1144,13 @@ def _finalize_short_payload(data: dict, topic: dict) -> dict:
             if tag not in ht_parts:
                 ht_parts.append(tag)
 
-    # YouTube Shorts feed distribution: #Shorts must appear on the first line of the
-    # description so the video enters the hashtag feed. Put core tags on line 1,
-    # body + disclaimer next, remaining tags at the end.
+    # Value statement leads (first 125 chars are shown in search previews).
+    # All hashtags go at the end so the description hook gets full SERP real estate.
     if ht_parts:
-        core_tags = [t for t in ht_parts if t.lower() in {"#shorts", "#personalfinance", "#moneytips"}]
-        rest_tags = [t for t in ht_parts if t not in core_tags]
-        if "#Shorts" not in core_tags:
-            core_tags.insert(0, "#Shorts")
-        header = " ".join(core_tags)
-        footer = " ".join(rest_tags) if rest_tags else ""
-        description = header + "\n\n" + description + ("\n\n" + footer if footer else "")
+        if "#Shorts" not in [t for t in ht_parts if t.lower() == "#shorts"]:
+            ht_parts.insert(0, "#Shorts")
+        all_tags = " ".join(ht_parts)
+        description = description + "\n\n" + all_tags
     data["description"] = description
     return data
 
@@ -1164,11 +1309,36 @@ def _normalize_overlay(overlay: dict, word_count: int) -> dict | None:
     elif kind == "label":
         normalized["text"] = _normalize_label_text((overlay or {}).get("text"), "THIS IS KEY")
     elif kind == "comparison":
-        normalized["left"] = _normalize_text((overlay or {}).get("left"), "Before")
-        normalized["right"] = _normalize_text((overlay or {}).get("right"), "After")
+        normalized["left"] = _normalize_text(
+            (overlay or {}).get("left"),
+            "Before",
+            max_chars=COMPARISON_TEXT_CHARS,
+            allow_ellipsis=False,
+        )
+        normalized["right"] = _normalize_text(
+            (overlay or {}).get("right"),
+            "After",
+            max_chars=COMPARISON_TEXT_CHARS,
+            allow_ellipsis=False,
+        )
+    elif kind == "timeline":
+        _TIMELINE_COL_CHARS = 16
+        for col in ("col1_label", "col2_label", "col3_label"):
+            normalized[col] = _normalize_text(
+                (overlay or {}).get(col, ""), "—", max_chars=_TIMELINE_COL_CHARS, allow_ellipsis=False
+            ).upper()
+        for col, fallback in (("col1_value", "$50/mo"), ("col2_value", "$3,200"), ("col3_value", "$29,000")):
+            normalized[col] = _normalize_text(
+                (overlay or {}).get(col, ""), fallback, max_chars=_TIMELINE_COL_CHARS, allow_ellipsis=False
+            )
     else:  # cta
         cta = " ".join(str((overlay or {}).get("text", "")).split()).strip()
-        normalized["text"] = _normalize_text(cta, "Save this and follow for more")
+        normalized["text"] = _normalize_text(
+            cta,
+            "Comment MONEY for the setup. Follow for more.",
+            max_chars=CTA_TEXT_CHARS,
+            allow_ellipsis=False,
+        )
 
     return normalized
 
@@ -1204,7 +1374,7 @@ def _ensure_overlay_density(overlays: list[dict], script: str, topic: dict) -> l
     # Ensure CTA overlay near the end — use pillar-specific copy.
     cta_start = max(words - int(3.0 * WPS), 0)
     pillar = str(topic.get("pillar", "")).lower()
-    cta_copy = PILLAR_CTA_TEXT.get(pillar, "Save this and follow for more money systems")
+    cta_copy = PILLAR_CTA_TEXT.get(pillar, "Comment MONEY for the setup. Follow for more.")
     if not any(o["type"] == "cta" for o in normalized):
         normalized.append(
             {
@@ -1236,9 +1406,16 @@ def _ensure_overlay_density(overlays: list[dict], script: str, topic: dict) -> l
     hook_start = hook_ovs[0]["start_word"] if hook_ovs else 0
     hook_end = hook_start + int((hook_ovs[0]["duration_s"] if hook_ovs else 4.0) * WPS)
     # Remove any non-hook overlay that falls inside the exclusion zone.
+    # Exception: MYTH/WRONG labels at start_word==0 are intentionally co-timed with
+    # the hook for 1.2s to create a pattern interrupt — they don't compete with it.
     normalized = [
         o for o in normalized
         if o["type"] == "hook_number"
+        or (
+            o.get("type") == "label"
+            and int(o.get("start_word", 999)) == 0
+            and any(kw in str(o.get("text", "")).upper() for kw in ("MYTH", "WRONG"))
+        )
         or not (hook_start - HOOK_EXCL_WORDS <= o["start_word"] < hook_end + HOOK_EXCL_WORDS)
     ]
 
@@ -1296,6 +1473,22 @@ def _ensure_overlay_density(overlays: list[dict], script: str, topic: dict) -> l
         cta = [o for o in clamped if o["type"] == "cta"][-1:]
         comparisons = [o for o in clamped if o["type"] == "comparison"]
         labels = [o for o in clamped if o["type"] == "label"]
+        def _label_priority(ov: dict) -> tuple[int, int]:
+            txt = str(ov.get("text", "")).upper()
+            score = 0
+            if "?" in txt or "WHICH" in txt or "PICK" in txt:
+                score += 4
+            if "COMMENT" in txt or "TEAM" in txt:
+                score += 3
+            if "STAY" in txt or "FINAL STEP" in txt:
+                score += 2
+            if "STEP " in txt:
+                score += 2
+            if txt in GENERIC_LABEL_TEXTS:
+                score -= 2
+            return (-score, int(ov.get("start_word", 0)))
+
+        labels = sorted(labels, key=_label_priority)
         preferred_middle = comparisons + labels
         keep_middle = preferred_middle[: max(0, MAX_OVERLAYS - len(hook) - len(cta))]
         clamped = sorted(hook + keep_middle + cta, key=lambda o: o["start_word"])
@@ -1390,33 +1583,44 @@ FORMAT RULES:
 - Count your words before finalising — scripts under {MIN_WORDS} words will be rejected
 - The VERY FIRST spoken token must contain a number or dollar amount
 - The first 1.2 seconds must include: (1) number, (2) pain/problem, (3) consequence if ignored
+- CONTROVERSY FRAMING: open with a claim that challenges conventional wisdom (e.g., "Most financial advisors hate this" or "Your bank doesn't want you to know this") — debate drives comments
 - Use this 3-beat flow only: SHOCK NUMBER -> SIMPLE MATH PROOF -> ACTION STEP
 - Uses simple language — explain like the viewer is smart but has never heard this before
-- One concrete worked example with real dollar amounts and specific numbers
+- Dollar examples MUST use accessible amounts ($50–$150/month) — never $500+ which excludes viewers on tight budgets
+- Brief source attribution in the script (e.g., "research shows" or "according to DALBAR") — never float a stat without context
 - Emotional arc: hook with urgency → simple explanation → empowering takeaway
-- Ends with loop-style CTA that references the opening hook so viewers rewatch
+- Closing must have THREE parts in order: (1) loop-style replay line referencing the opening hook, (2) "Follow for weekly money moves" subscribe prompt, (3) one-sentence tease of the next insight (e.g., "Next: the one account that makes this 40% more powerful")
 - No earnings guarantees, no "you will make X", educational only
 - Include one [PAUSE] after the hook number for impact
+- Grammar must be natural: use "X% of people" (never "X% people")
+- Never end with filler lines like "you know"
 
 OVERLAY RULES:
 - on_screen text appears at specific word indexes in the voiceover
 - start_word: 0-indexed position of spoken word in voiceover (count only real words — do NOT count [PAUSE] markers)
 - duration_s: how long it stays on screen
-- types: "hook_number" (big stat, 4s), "label" (short phrase, 2.0s), "comparison" (before/after table beat, 2.5s), "cta" (final call to action, 3.5s)
+- types: "hook_number" (big stat, 4s), "label" (short phrase, 2.0s), "comparison" (before/after table beat, 2.5s), "timeline" (3-column progression table, 3.5s), "cta" (final call to action, 3.5s)
 - Plan {MIN_OVERLAYS}–{MAX_OVERLAYS} overlays total.
 - Label overlays must be concise: 2–5 words, no ellipses.
 - Every key number must have an overlay.
-- Include at least 2 comparison overlays (before vs after) at different timestamps.
+- Include at least 4 comparison overlays (before vs after) at different timestamps — one per story beat.
+- Include exactly 1 timeline overlay in the second half showing the compounding progression (NOW / 5 YEARS / 20 YEARS with real dollar values from the script).
+- Include at least 1 interaction label in first half (e.g., WHICH WOULD YOU PICK? or COMMENT ...).
 - There must be no dead visual gap longer than 2.0s.
+
+TITLE RULES:
+- At least 2 options must use "X vs Y" framing (e.g., "DCA vs Timing — who wins after 10 years?")
+- At least 1 option must use "Part 1" or "Rule #1" series framing to encourage subscribing for the rest
+- At least 1 option must use a controversy angle (e.g., "Why Most Financial Advisors Are Wrong About X")
 
 Return ONLY this JSON, no explanation:
 {{
   "title_options": [
     "<title option 1, max 60 chars, starts with number or power word>",
-    "<title option 2>",
-    "<title option 3>",
-    "<title option 4>",
-    "<title option 5>",
+    "<title option 2, X vs Y framing>",
+    "<title option 3, X vs Y framing>",
+    "<title option 4, series/Part 1 framing>",
+    "<title option 5, controversy angle>",
     "<title option 6>",
     "<title option 7>",
     "<title option 8>"
@@ -1425,7 +1629,11 @@ Return ONLY this JSON, no explanation:
   "overlays": [
     {{"type": "hook_number", "text": "<big stat>", "start_word": 0, "duration_s": 4.0}},
     {{"type": "label", "text": "<short phrase>", "start_word": 15, "duration_s": 2.5}},
-    {{"type": "comparison", "left": "<before>", "right": "<after>", "start_word": 60, "duration_s": 4.0}},
+    {{"type": "comparison", "left": "<before>", "right": "<after>", "start_word": 30, "duration_s": 2.8}},
+    {{"type": "comparison", "left": "<before>", "right": "<after>", "start_word": 50, "duration_s": 2.8}},
+    {{"type": "comparison", "left": "<before>", "right": "<after>", "start_word": 70, "duration_s": 2.8}},
+    {{"type": "comparison", "left": "<before>", "right": "<after>", "start_word": 85, "duration_s": 2.8}},
+    {{"type": "timeline", "col1_label": "NOW", "col1_value": "$50/mo", "col2_label": "5 YEARS", "col2_value": "$3,200", "col3_label": "20 YEARS", "col3_value": "$29,000", "start_word": 75, "duration_s": 3.5}},
     {{"type": "cta", "text": "Follow for more money tips", "start_word": 100, "duration_s": 5.0}}
   ],
   "stat_citations": ["<short source label 1>", "<short source label 2 optional>"],
@@ -1455,7 +1663,7 @@ def generate(
     def _apply_script_update(data: dict, new_script: str) -> str:
         old_script = str(data.get("voiceover_script", "") or "")
         polished = _polish_voiceover_script(new_script)
-        fitted = _fit_script_word_budget(polished, MIN_WORDS, MAX_WORDS)
+        fitted = _polish_voiceover_script(_fit_script_word_budget(polished, MIN_WORDS, MAX_WORDS))
         if fitted != old_script:
             _retime_overlays_for_script_edit(data, old_script, fitted)
         data["voiceover_script"] = fitted

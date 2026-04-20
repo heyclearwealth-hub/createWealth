@@ -40,9 +40,9 @@ MAX_LINE_CHARS = 20     # fallback char-wrap width (word-boundary fallback only)
 TARGET_LOUDNESS = -14.0  # YouTube Shorts normalises to -14 dB LUFS on mobile
 BG_FRAME_FPS = 6.0      # background frame extraction rate (higher = smoother motion)
 BG_CADENCE_S = 0.5      # background refresh cadence for segment generation
-BG_MIN_CUT_S = 0.9
-BG_MAX_CUT_S = 1.9
-BG_ABS_MAX_SHOT_S = 2.2
+BG_MIN_CUT_S = 0.75
+BG_MAX_CUT_S = 1.45
+BG_ABS_MAX_SHOT_S = 1.7
 BG_TARGET_CLIPS = 10
 BG_MIN_SOURCES = 2
 BG_MAX_PER_QUERY = 2
@@ -605,13 +605,13 @@ def _prepare_bg_video(raw_clip: Path, work_dir: Path, duration: float, tag: str 
     We keep footage brighter than before to improve feed-stop visibility on mobile.
     """
     out = work_dir / f"bg_processed_{tag}.mp4"
-    overscan_w = int(SHORT_W * 1.08)
-    overscan_h = int(SHORT_H * 1.08)
+    overscan_w = int(SHORT_W * 1.14)
+    overscan_h = int(SHORT_H * 1.14)
     vf = (
         f"scale={overscan_w}:{overscan_h}:force_original_aspect_ratio=increase,"
         f"crop={SHORT_W}:{SHORT_H}:"
-        f"'(in_w-{SHORT_W})/2 + (in_w-{SHORT_W})*0.18*sin(t*0.41)':"
-        f"'(in_h-{SHORT_H})/2 + (in_h-{SHORT_H})*0.18*cos(t*0.33)',"
+        f"'(in_w-{SHORT_W})/2 + (in_w-{SHORT_W})*0.32*sin(t*0.67)':"
+        f"'(in_h-{SHORT_H})/2 + (in_h-{SHORT_H})*0.30*cos(t*0.54)',"
         f"eq=brightness={BG_BRIGHTNESS}:saturation={BG_SATURATION},"
         f"boxblur={BG_BLUR}"
     )
@@ -922,6 +922,60 @@ def _make_overlay_image(overlay: dict, w: int = SHORT_W, h: int = SHORT_H, label
         for i, line in enumerate(right_lines[:3]):
             draw.text((x0 + int(card_w * 0.56), body_y + i * 58), line, font=right_font, fill=(245, 245, 245, 255))
 
+    elif otype == "timeline":
+        # 3-column progression table: NOW / 5 YEARS / 20 YEARS with dollar values.
+        # Most screenshot-worthy format — viewers share to show the compounding math.
+        labels = [
+            overlay.get("col1_label", "NOW"),
+            overlay.get("col2_label", "5 YEARS"),
+            overlay.get("col3_label", "20 YEARS"),
+        ]
+        values = [
+            overlay.get("col1_value", "—"),
+            overlay.get("col2_value", "—"),
+            overlay.get("col3_value", "—"),
+        ]
+        card_w = int(w * 0.90)
+        card_h = int(h * 0.22)
+        x0 = (w - card_w) // 2
+        y0 = int(h * 0.38)
+        x1 = x0 + card_w
+        y1 = y0 + card_h
+        col_w = card_w // 3
+
+        draw.rounded_rectangle([(x0, y0), (x1, y1)], radius=20, fill=(0, 0, 0, 215))
+        # Vertical dividers
+        for div in (1, 2):
+            div_x = x0 + col_w * div
+            draw.line([(div_x, y0 + 16), (div_x, y1 - 16)], fill=(90, 90, 90, 200), width=2)
+
+        label_font = _get_font(34)
+        value_font_start = 72
+        value_font_min = 38
+
+        for i, (lbl, val) in enumerate(zip(labels, values)):
+            col_x0 = x0 + col_w * i
+            col_cx = col_x0 + col_w // 2
+            # Label (small, grey, top of column)
+            lbl_w = _text_width(draw, lbl, label_font)
+            lbl_x = col_cx - lbl_w // 2
+            lbl_y = y0 + 18
+            draw.text((lbl_x + 1, lbl_y + 1), lbl, font=label_font, fill=(0, 0, 0, 160))
+            draw.text((lbl_x, lbl_y), lbl, font=label_font, fill=(180, 180, 180, 230))
+            # Value (large, yellow, bottom of column)
+            val_lines, val_font = _wrap_fit_lines(
+                draw, val, max_width=int(col_w * 0.88),
+                start_size=value_font_start, min_size=value_font_min, max_lines=2,
+            )
+            val_block_h = sum(_text_height(draw, ln, val_font) for ln in val_lines) + 4 * max(0, len(val_lines) - 1)
+            val_y = y0 + int(card_h * 0.46) + (int(card_h * 0.46) - val_block_h) // 2
+            for vi, vline in enumerate(val_lines):
+                vline_w = _text_width(draw, vline, val_font)
+                vline_x = col_cx - vline_w // 2
+                draw.text((vline_x + 2, val_y + 2), vline, font=val_font, fill=(0, 0, 0, 180))
+                draw.text((vline_x, val_y), vline, font=val_font, fill=(255, 220, 50, 255))
+                val_y += _text_height(draw, vline, val_font) + 4
+
     elif otype == "cta":
         text = _clean_text(overlay.get("text", "Follow for more"))
         lines, font = _wrap_fit_lines(draw, text, max_width=int(w * 0.80), start_size=58, min_size=32, max_lines=2)
@@ -1083,6 +1137,9 @@ def _needs_financial_disclaimer(overlays: list[dict], script_data: dict) -> bool
             _clean_text(ov.get("left", "")),
             _clean_text(ov.get("right", "")),
             _clean_text(ov.get("subtitle", "")),
+            _clean_text(ov.get("col1_value", "")),
+            _clean_text(ov.get("col2_value", "")),
+            _clean_text(ov.get("col3_value", "")),
         ])
     corpus_parts.extend([
         _clean_text(script_data.get("voiceover_script", "")),
@@ -1098,7 +1155,7 @@ def _sanitize_overlays(
     safe = []
     for ov in overlays:
         kind = str((ov or {}).get("type", "")).strip()
-        if kind not in {"hook_number", "label", "comparison", "cta"}:
+        if kind not in {"hook_number", "label", "comparison", "timeline", "cta"}:
             continue
         try:
             start_word = max(0, int((ov or {}).get("start_word", 0)))
@@ -1142,6 +1199,11 @@ def _sanitize_overlays(
         elif kind == "comparison":
             cleaned["left"] = _clean_overlay_copy(cleaned.get("left", ""), sentence_case=True)
             cleaned["right"] = _clean_overlay_copy(cleaned.get("right", ""), sentence_case=True)
+        elif kind == "timeline":
+            for col in ("col1_label", "col2_label", "col3_label"):
+                cleaned[col] = _clean_overlay_copy(cleaned.get(col, "—")).upper()
+            for col in ("col1_value", "col2_value", "col3_value"):
+                cleaned[col] = _clean_overlay_copy(cleaned.get(col, "—"), sentence_case=False)
         elif kind == "cta":
             cleaned["text"] = _clean_overlay_copy(cleaned.get("text", ""), sentence_case=True)
         safe.append(cleaned)

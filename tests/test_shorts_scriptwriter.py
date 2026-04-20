@@ -129,3 +129,28 @@ def test_engagement_blueprint_injects_multiple_comparison_tables():
     patched = sw._apply_engagement_blueprint(overlays, script, topic)
     comparisons = [ov for ov in patched if ov.get("type") == "comparison"]
     assert len(comparisons) >= 2
+
+
+def test_polish_voiceover_script_fixes_percent_people_and_removes_you_know_tail():
+    raw = "4.7% people lose money over years. That's the piece most people skip. you know."
+    polished = sw._polish_voiceover_script(raw)
+    assert "4.7% of people" in polished
+    assert "you know." not in polished.lower()
+
+
+def test_ensure_numeric_opening_percent_uses_of_people():
+    script = "Most people miss this and lose money over years. The average drag is 4.7% each year."
+    fixed = sw._ensure_numeric_opening(script, topic={"topic": "market timing"})
+    assert re.match(r"^\d+(?:\.\d+)?%\s+of people\b", fixed.lower())
+
+
+def test_engagement_blueprint_adds_comment_prompt_label():
+    script = (
+        "4.7% of people miss this. [PAUSE] Invest $500 every month and stop trying to time entries. "
+        "Do this for years and let consistency win."
+    )
+    overlays = [{"type": "hook_number", "text": "4.7%", "start_word": 0, "duration_s": 4.0}]
+    topic = {"pillar": "investing"}
+    patched = sw._apply_engagement_blueprint(overlays, script, topic)
+    labels = [str(ov.get("text", "")).upper() for ov in patched if ov.get("type") == "label"]
+    assert any("COMMENT" in text for text in labels)
